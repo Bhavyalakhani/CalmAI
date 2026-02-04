@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config
+import config # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -154,10 +154,10 @@ def fetch_all(skip_existing=True):
             save_raw_response(patient_id, response_text, raw_dir)
             fetched_count += 1
         else:
-            logger.error(f"  Failed to get response for {patient_id}")
+            logger.error(f"Failed to get response for {patient_id}")
 
         if i < len(patients) - 1 and response_text:
-            logger.info("  Waiting 15s...")
+            logger.info("Waiting 15s...")
             time.sleep(15)
     
     logger.info(f"\nFETCH COMPLETE!")
