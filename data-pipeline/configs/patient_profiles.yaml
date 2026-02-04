@@ -1,0 +1,92 @@
+therapist_id: "therapist_001"
+
+patients:
+  - patient_id: "patient_001"
+    name: "Alex"
+    age: 28
+    occupation: "Software Engineer"
+    background: "Startup employee, first-gen college grad"
+    concerns: ["work anxiety", "imposter syndrome", "sleep issues"]
+    writing_style: "analytical, overthinks"
+    start_date: "2025-06-01"
+
+  - patient_id: "patient_002"
+    name: "Jordan"
+    age: 45
+    occupation: "Teacher"
+    background: "Going through divorce, two kids"
+    concerns: ["grief", "co-parenting", "identity"]
+    writing_style: "emotional, detailed"
+    start_date: "2025-05-15"
+
+  - patient_id: "patient_003"
+    name: "Sam"
+    age: 19
+    occupation: "College Student"
+    background: "First-gen college student"
+    concerns: ["social anxiety", "academic pressure", "fitting in"]
+    writing_style: "casual, brief"
+    start_date: "2025-04-01"
+
+  - patient_id: "patient_004"
+    name: "Morgan"
+    age: 52
+    occupation: "Executive"
+    background: "VP at company, health issues"
+    concerns: ["burnout", "health anxiety", "aging parents"]
+    writing_style: "structured, goal-oriented"
+    start_date: "2025-06-15"
+
+  - patient_id: "patient_005"
+    name: "Riley"
+    age: 34
+    occupation: "Designer"
+    background: "New parent, postpartum"
+    concerns: ["postpartum adjustment", "identity loss", "relationship strain"]
+    writing_style: "raw, honest"
+    start_date: "2025-05-01"
+
+  - patient_id: "patient_006"
+    name: "Casey"
+    age: 38
+    occupation: "ER Nurse"
+    background: "10 years in ER, trauma exposure"
+    concerns: ["compassion fatigue", "trauma", "boundaries"]
+    writing_style: "matter-of-fact, dark humor"
+    start_date: "2025-07-01"
+
+  - patient_id: "patient_007"
+    name: "Taylor"
+    age: 24
+    occupation: "PhD Student"
+    background: "Chemistry PhD, away from family"
+    concerns: ["loneliness", "impostor syndrome", "career doubt"]
+    writing_style: "introspective, questioning"
+    start_date: "2025-05-20"
+
+  - patient_id: "patient_008"
+    name: "Jamie"
+    age: 41
+    occupation: "Restaurant Owner"
+    background: "Small business struggling"
+    concerns: ["financial stress", "fear of failure", "marriage strain"]
+    writing_style: "practical, worried"
+    start_date: "2025-06-10"
+
+  - patient_id: "patient_009"
+    name: "Avery"
+    age: 31
+    occupation: "Writer"
+    background: "2 years sober"
+    concerns: ["sobriety", "rebuilding relationships", "creative blocks"]
+    writing_style: "creative, metaphorical"
+    start_date: "2025-04-15"
+
+  - patient_id: "patient_010"
+    name: "Quinn"
+    age: 62
+    occupation: "Retired Teacher"
+    background: "Spouse passed 8 months ago"
+    concerns: ["grief", "finding purpose", "loneliness"]
+    writing_style: "thoughtful, nostalgic"
+    start_date: "2025-05-10"
