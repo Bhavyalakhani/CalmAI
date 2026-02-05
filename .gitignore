@@ -73,6 +73,7 @@ docs/_build/
 
 # PyBuilder
 .pybuilder/
+.github/copilot-instructions.md
 target/
 
 # Jupyter Notebook

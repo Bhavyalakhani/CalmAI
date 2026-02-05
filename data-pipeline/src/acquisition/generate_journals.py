@@ -13,12 +13,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config # type: ignore
+import config # pyright: ignore[reportMissingImports]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-PROMPT = """You are a creative writer simulating realistic therapy journal entries for a mental health app demo.
+
+class JournalGenerator:
+    PROMPT = """You are a creative writer simulating realistic therapy journal entries for a mental health app demo.
 
 PATIENT PROFILE:
 - Name: {name}
@@ -52,285 +54,284 @@ RESPOND WITH ONLY A VALID JSON ARRAY IN THIS EXACT FORMAT:
 
 Generate the 100 entries as a JSON array now:"""
 
-def load_config():
-    config_path = config.settings.CONFIGS_DIR / "patient_profiles.yaml"
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    def __init__(self):
+        self.settings = config.settings
+        self.logger = logger
+        self.client = None
+        self.cfg = None
 
+    def load_config(self):
+        config_path = self.settings.CONFIGS_DIR / "patient_profiles.yaml"
+        with open(config_path, 'r') as f:
+            self.cfg = yaml.safe_load(f)
+        return self.cfg
 
-def get_end_date(start_date):
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = start + timedelta(days=300)
-    return end.strftime("%Y-%m-%d")
+    def get_end_date(self, start_date):
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = start + timedelta(days=300)
+        return end.strftime("%Y-%m-%d")
 
+    def get_raw_responses_dir(self):
+        raw_dir = self.settings.RAW_DATA_DIR / "journals" / "raw_responses"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        return raw_dir
 
-def get_raw_responses_dir():
-    raw_dir = config.settings.RAW_DATA_DIR / "journals" / "raw_responses"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    return raw_dir
+    def get_output_path(self):
+        return self.settings.RAW_DATA_DIR / "journals" / "synthetic_journals.parquet"
 
+    def fetch_patient_response(self, patient):
+        start_date = patient["start_date"]
+        end_date = self.get_end_date(start_date)
+        prompt = self.PROMPT.format(
+            name=patient["name"],
+            age=patient["age"],
+            occupation=patient["occupation"],
+            background=patient["background"],
+            concerns=", ".join(patient["concerns"]),
+            writing_style=patient["writing_style"],
+            start_date=start_date,
+            end_date=end_date
+        )
 
-def fetch_patient_response(client, patient, model_name):
-    start_date = patient["start_date"]
-    end_date = get_end_date(start_date)
-    prompt = PROMPT.format(
-        name=patient["name"],
-        age=patient["age"],
-        occupation=patient["occupation"],
-        background=patient["background"],
-        concerns=", ".join(patient["concerns"]),
-        writing_style=patient["writing_style"],
-        start_date=start_date,
-        end_date=end_date
-    )
-    
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=genai.types.GenerateContentConfig(
-                    temperature=0.9,
-                    max_output_tokens=100000
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.settings.GEMINI_MODEL,
+                    contents=prompt,
+                    config=genai.types.GenerateContentConfig(
+                        temperature=0.9,
+                        max_output_tokens=100000
+                    )
                 )
-            )
-            
-            if response.text:
-                return response.text
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < 2:
-                time.sleep(10)
-            else:
-                raise
-    
-    return None
 
+                if response.text:
+                    return response.text
+            except Exception as e:
+                self.logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    time.sleep(10)
+                else:
+                    raise
 
-def save_raw_response(patient_id, response_text, raw_dir):
-    output_path = raw_dir / f"{patient_id}_raw.json"
-    data = {
-        "patient_id": patient_id,
-        "timestamp": datetime.now().isoformat(),
-        "raw_response": response_text
-    }
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"  Saved raw response to {output_path}")
-    return output_path
-
-
-def fetch_all(skip_existing=True):
-    config.settings.ensure_directories()
-    cfg = load_config()
-    patients = cfg["patients"]
-    
-    if not config.settings.GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not set")
-    
-    client = genai.Client(api_key=config.settings.GEMINI_API_KEY)
-    raw_dir = get_raw_responses_dir()
-    
-    logger.info(f"Fetching journals for {len(patients)} patients")
-    logger.info(f"Raw responses will be saved to: {raw_dir}")
-    
-    fetched_count = 0
-    skipped_count = 0
-    
-    for i, patient in enumerate(patients):
-        patient_id = patient['patient_id']
-        raw_file = raw_dir / f"{patient_id}_raw.json"
-        
-        if skip_existing and raw_file.exists():
-            logger.info(f"[{i+1}/{len(patients)}] {patient_id} - SKIPPED (already exists)")
-            skipped_count += 1
-            continue
-        
-        logger.info(f"[{i+1}/{len(patients)}] {patient_id} ({patient['name']}) - Fetching...")
-        
-        response_text = fetch_patient_response(client, patient, config.settings.GEMINI_MODEL)
-        
-        if response_text:
-            save_raw_response(patient_id, response_text, raw_dir)
-            fetched_count += 1
-        else:
-            logger.error(f"Failed to get response for {patient_id}")
-
-        if i < len(patients) - 1 and response_text:
-            logger.info("Waiting 15s...")
-            time.sleep(15)
-    
-    logger.info(f"\nFETCH COMPLETE!")
-    logger.info(f"Fetched: {fetched_count}")
-    logger.info(f"Skipped: {skipped_count}")
-    logger.info(f"Raw files location: {raw_dir}")
-    
-    return raw_dir
-
-
-def parse_json_response(response_text):
-    text = response_text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-    if text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-    
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    
-    try:
-        pattern = r'\{\s*"entry_number"\s*:\s*(\d+)\s*,\s*"date"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
-        matches = re.findall(pattern, text, re.DOTALL)
-        
-        if matches:
-            entries = []
-            for entry_num, date, content in matches:
-                content = content.replace('\n', ' ').strip()
-                entries.append({
-                    "entry_number": int(entry_num),
-                    "date": date,
-                    "content": content
-                })
-            if entries:
-                logger.info(f"  Recovered {len(entries)} entries via regex extraction")
-                return entries
-    except Exception as e:
-        logger.warning(f"Regex extraction failed: {e}")
-    
-    try:
-        fixed = re.sub(r',\s*([}\]])', r'\1', text)
-        return json.loads(fixed)
-    except json.JSONDecodeError:
-        pass
-    
-    logger.error(f"JSON parse error after all recovery attempts")
-    logger.error(f"Response preview: {text[:1000]}...")
-    raise json.JSONDecodeError("Failed to parse JSON after multiple attempts", text, 0)
-
-def process_entries(parsed, patient_id, therapist_id):
-    entries = []
-    for idx, item in enumerate(parsed):
-        entry_num = (
-            item.get('entry_number') or 
-            item.get('entryNumber') or 
-            item.get('entry_num') or 
-            item.get('number') or 
-            (idx + 1)
-        )
-        
-        date = (
-            item.get('date') or 
-            item.get('entry_date') or 
-            item.get('entryDate') or 
-            ''
-        )
-        
-        content = (
-            item.get('content') or 
-            item.get('entry') or 
-            item.get('text') or 
-            item.get('journal_entry') or
-            ''
-        )
-        
-        if not content:
-            logger.warning(f"  Entry {entry_num} has no content, skipping")
-            continue
-        
-        entries.append({
-            "journal_id": f"{patient_id}_entry_{int(entry_num):03d}",
-            "patient_id": patient_id,
-            "therapist_id": therapist_id,
-            "entry_date": date,
-            "content": content,
-            "word_count": len(content.split())
-        })
-    
-    return entries
-
-
-def get_output_path():
-    return config.settings.RAW_DATA_DIR / "journals" / "synthetic_journals.parquet"
-
-
-def parse_all(skip_existing=True):
-    config.settings.ensure_directories()
-    
-    output_path = get_output_path()
-    if skip_existing and output_path.exists():
-        logger.info(f"Output file already exists: {output_path}")
-        logger.info("Skipping parse. Use --force to regenerate.")
-        return output_path
-    
-    cfg = load_config()
-    therapist_id = cfg["therapist_id"]
-    
-    raw_dir = get_raw_responses_dir()
-    
-    logger.info(f"Parsing raw responses from: {raw_dir}")
-    
-    all_entries = []
-    success_count = 0
-    error_count = 0
-    
-    raw_files = list(raw_dir.glob("*_raw.json"))
-    logger.info(f"Found {len(raw_files)} raw response files")
-    
-    for raw_file in raw_files:
-        patient_id = raw_file.stem.replace("_raw", "")
-        logger.info(f"Parsing {patient_id}...")
-        
-        try:
-            with open(raw_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            raw_response = data["raw_response"]
-            parsed = parse_json_response(raw_response)
-            logger.info(f"Parsed {len(parsed)} entries")
-            
-            entries = process_entries(parsed, patient_id, therapist_id)
-            all_entries.extend(entries)
-            logger.info(f"Processed {len(entries)} entries")
-            
-            success_count += 1
-            
-        except Exception as e:
-            logger.error(f"Failed to parse {patient_id}: {e}")
-            error_count += 1
-    
-    if not all_entries:
-        logger.error("No entries parsed! Check raw files.")
         return None
-    
-    df = pd.DataFrame(all_entries)
-    output_path = get_output_path()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
-    
-    logger.info(f"PARSE COMPLETE!")
-    logger.info(f"Success: {success_count}")
-    logger.info(f"Errors: {error_count}")
-    logger.info(f"Total entries: {len(df)}")
-    logger.info(f"Patients: {df['patient_id'].nunique()}")
-    logger.info(f"Avg words: {df['word_count'].mean():.0f}")
-    logger.info(f"Output: {output_path}")
-    
-    return output_path
 
-def run(skip_existing=True):
-    output_path = get_output_path()
-    if skip_existing and output_path.exists():
-        logger.info(f"Final output already exists: {output_path}")
-        logger.info("Skipping generation. Use --force to regenerate.")
+    def save_raw_response(self, patient_id, response_text, raw_dir):
+        output_path = raw_dir / f"{patient_id}_raw.json"
+        data = {
+            "patient_id": patient_id,
+            "timestamp": datetime.now().isoformat(),
+            "raw_response": response_text
+        }
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        self.logger.info(f"  Saved raw response to {output_path}")
         return output_path
-    
-    fetch_all(skip_existing=skip_existing)
-    return parse_all(skip_existing=False)
+
+    def fetch_all(self, skip_existing=True):
+        self.settings.ensure_directories()
+        self.load_config()
+        patients = self.cfg["patients"]
+
+        if not self.settings.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY not set")
+
+        self.client = genai.Client(api_key=self.settings.GEMINI_API_KEY)
+        raw_dir = self.get_raw_responses_dir()
+
+        self.logger.info(f"Fetching journals for {len(patients)} patients")
+        self.logger.info(f"Raw responses will be saved to: {raw_dir}")
+
+        fetched_count = 0
+        skipped_count = 0
+
+        for i, patient in enumerate(patients):
+            patient_id = patient['patient_id']
+            raw_file = raw_dir / f"{patient_id}_raw.json"
+
+            if skip_existing and raw_file.exists():
+                self.logger.info(f"[{i+1}/{len(patients)}] {patient_id} - SKIPPED (already exists)")
+                skipped_count += 1
+                continue
+
+            self.logger.info(f"[{i+1}/{len(patients)}] {patient_id} ({patient['name']}) - Fetching...")
+
+            response_text = self.fetch_patient_response(patient)
+
+            if response_text:
+                self.save_raw_response(patient_id, response_text, raw_dir)
+                fetched_count += 1
+            else:
+                self.logger.error(f"Failed to get response for {patient_id}")
+
+            if i < len(patients) - 1 and response_text:
+                self.logger.info("Waiting 15s...")
+                time.sleep(15)
+
+        self.logger.info(f"\nFETCH COMPLETE!")
+        self.logger.info(f"Fetched: {fetched_count}")
+        self.logger.info(f"Skipped: {skipped_count}")
+        self.logger.info(f"Raw files location: {raw_dir}")
+
+        return raw_dir
+
+    def parse_json_response(self, response_text):
+        text = response_text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            pattern = r'\{\s*"entry_number"\s*:\s*(\d+)\s*,\s*"date"\s*:\s*"([^"]+)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
+            matches = re.findall(pattern, text, re.DOTALL)
+
+            if matches:
+                entries = []
+                for entry_num, date, content in matches:
+                    content = content.replace('\n', ' ').strip()
+                    entries.append({
+                        "entry_number": int(entry_num),
+                        "date": date,
+                        "content": content
+                    })
+                if entries:
+                    self.logger.info(f"  Recovered {len(entries)} entries via regex extraction")
+                    return entries
+        except Exception as e:
+            self.logger.warning(f"Regex extraction failed: {e}")
+
+        try:
+            fixed = re.sub(r',\s*([}\]])', r'\1', text)
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        self.logger.error(f"JSON parse error after all recovery attempts")
+        self.logger.error(f"Response preview: {text[:1000]}...")
+        raise json.JSONDecodeError("Failed to parse JSON after multiple attempts", text, 0)
+
+    def process_entries(self, parsed, patient_id, therapist_id):
+        entries = []
+        for idx, item in enumerate(parsed):
+            entry_num = (
+                item.get('entry_number') or
+                item.get('entryNumber') or
+                item.get('entry_num') or
+                item.get('number') or
+                (idx + 1)
+            )
+
+            date = (
+                item.get('date') or
+                item.get('entry_date') or
+                item.get('entryDate') or
+                ''
+            )
+
+            content = (
+                item.get('content') or
+                item.get('entry') or
+                item.get('text') or
+                item.get('journal_entry') or
+                ''
+            )
+
+            if not content:
+                self.logger.warning(f"  Entry {entry_num} has no content, skipping")
+                continue
+
+            entries.append({
+                "journal_id": f"{patient_id}_entry_{int(entry_num):03d}",
+                "patient_id": patient_id,
+                "therapist_id": therapist_id,
+                "entry_date": date,
+                "content": content,
+                "word_count": len(content.split())
+            })
+
+        return entries
+
+    def parse_all(self, skip_existing=True):
+        self.settings.ensure_directories()
+
+        output_path = self.get_output_path()
+        if skip_existing and output_path.exists():
+            self.logger.info(f"Output file already exists: {output_path}")
+            self.logger.info("Skipping parse. Use --force to regenerate.")
+            return output_path
+
+        self.load_config()
+        therapist_id = self.cfg["therapist_id"]
+
+        raw_dir = self.get_raw_responses_dir()
+
+        self.logger.info(f"Parsing raw responses from: {raw_dir}")
+
+        all_entries = []
+        success_count = 0
+        error_count = 0
+
+        raw_files = list(raw_dir.glob("*_raw.json"))
+        self.logger.info(f"Found {len(raw_files)} raw response files")
+
+        for raw_file in raw_files:
+            patient_id = raw_file.stem.replace("_raw", "")
+            self.logger.info(f"Parsing {patient_id}...")
+
+            try:
+                with open(raw_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                raw_response = data["raw_response"]
+                parsed = self.parse_json_response(raw_response)
+                self.logger.info(f"Parsed {len(parsed)} entries")
+
+                entries = self.process_entries(parsed, patient_id, therapist_id)
+                all_entries.extend(entries)
+                self.logger.info(f"Processed {len(entries)} entries")
+
+                success_count += 1
+
+            except Exception as e:
+                self.logger.error(f"Failed to parse {patient_id}: {e}")
+                error_count += 1
+
+        if not all_entries:
+            self.logger.error("No entries parsed! Check raw files.")
+            return None
+
+        df = pd.DataFrame(all_entries)
+        output_path = self.get_output_path()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(output_path, index=False)
+
+        self.logger.info(f"PARSE COMPLETE!")
+        self.logger.info(f"Success: {success_count}")
+        self.logger.info(f"Errors: {error_count}")
+        self.logger.info(f"Total entries: {len(df)}")
+        self.logger.info(f"Patients: {df['patient_id'].nunique()}")
+        self.logger.info(f"Avg words: {df['word_count'].mean():.0f}")
+        self.logger.info(f"Output: {output_path}")
+
+        return output_path
+
+    def run(self, skip_existing=True):
+        output_path = self.get_output_path()
+        if skip_existing and output_path.exists():
+            self.logger.info(f"Final output already exists: {output_path}")
+            self.logger.info("Skipping generation. Use --force to regenerate.")
+            return output_path
+
+        self.fetch_all(skip_existing=skip_existing)
+        return self.parse_all(skip_existing=False)
 
 
 def main():
@@ -346,12 +347,16 @@ def main():
         action="store_true",
     )
     args = parser.parse_args()
+
+    generator = JournalGenerator()
+
     if args.command == "fetch":
-        fetch_all(skip_existing=not args.force)
+        generator.fetch_all(skip_existing=not args.force)
     elif args.command == "parse":
-        parse_all(skip_existing=not args.force)
+        generator.parse_all(skip_existing=not args.force)
     else:
-        run(skip_existing=not args.force)
+        generator.run(skip_existing=not args.force)
+
 
 if __name__ == "__main__":
     main()
