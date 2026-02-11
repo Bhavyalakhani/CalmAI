@@ -22,6 +22,7 @@ class Settings:
     MONGODB_URI: str = os.getenv("MONGODB_URI", "")
     MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "calm_ai")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    EMBEDDINGS_DIR: Path = PROJECT_ROOT / "data" / "embeddings"
     
     def ensure_directories(self):
         dirs = [
@@ -31,6 +32,7 @@ class Settings:
             self.PROCESSED_DATA_DIR / "journals",
             self.REPORTS_DIR / "validation",
             self.REPORTS_DIR / "bias",
+            self.EMBEDDINGS_DIR / "incoming_journals",
             self.LOGS_DIR,
         ]
         for d in dirs:
