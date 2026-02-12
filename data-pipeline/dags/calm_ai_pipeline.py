@@ -26,8 +26,8 @@ def on_dag_success(context):
     dag_run = context.get("dag_run")
     execution_date = dag_run.execution_date if dag_run else "unknown"
     send_email(
-        to=["jainamgala0202@gmail.com"],
-        subject="CalmAI Pipeline - Run Completed Successfully",
+        to=["gala.jain@northeastern.edu", "lakhani.bha@northeastern.edu", "shah.mir@northeastern.edu", "mane.prit@northeastern.edu", "adhikari.t@northeastern.edu"],
+        subject="CalmAI Data Pipeline - Run Completed Successfully",
         html_content=(
             f"<h3>CalmAI Pipeline Succeeded</h3>"
             f"<p><b>DAG:</b> calm_ai_pipeline</p>"
@@ -39,7 +39,7 @@ def on_dag_success(context):
 default_args = {
     "owner": "calmai",
     "depends_on_past": False,
-    "email": ["jainamgala0202@gmail.com"],
+    "email": ["gala.jain@northeastern.edu", "lakhani.bha@northeastern.edu", "shah.mir@northeastern.edu", "mane.prit@northeastern.edu", "adhikari.t@northeastern.edu"],
     "email_on_failure": True,
     "email_on_retry": False,
     "retries": 1,
