@@ -20,22 +20,6 @@ sys.path.insert(0, "/opt/airflow/configs")
 
 logger = logging.getLogger("calm_ai_pipeline")
 
-
-def on_dag_success(context):
-    from airflow.utils.email import send_email
-    dag_run = context.get("dag_run")
-    execution_date = dag_run.execution_date if dag_run else "unknown"
-    send_email(
-        to=["gala.jain@northeastern.edu", "lakhani.bha@northeastern.edu", "shah.mir@northeastern.edu", "mane.prit@northeastern.edu", "adhikari.t@northeastern.edu"],
-        subject="CalmAI Data Pipeline - Run Completed Successfully",
-        html_content=(
-            f"<h3>CalmAI Pipeline Succeeded</h3>"
-            f"<p><b>DAG:</b> calm_ai_pipeline</p>"
-            f"<p><b>Execution Date:</b> {execution_date}</p>"
-            f"<p>All tasks completed without failure.</p>"
-        ),
-    )
-
 default_args = {
     "owner": "calmai",
     "depends_on_past": False,
@@ -43,7 +27,7 @@ default_args = {
     "email_on_failure": True,
     "email_on_retry": False,
     "retries": 1,
-    "retry_delay": timedelta(minutes=2),
+    "retry_delay": timedelta(minutes=1),
 }
 
 
@@ -299,6 +283,11 @@ def store_to_mongodb_callable(**context):
         raise
 
 
+def success_email_callable(**context):
+    from alerts.success_email import send_success_email
+    send_success_email(**context)
+
+
 # ── DAG Definition ─────────────────────────────────────────────
 
 with DAG(
@@ -312,7 +301,6 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["calmai", "mental-health", "data-pipeline"],
-    on_success_callback=on_dag_success,
 ) as dag:
 
     t_start = PythonOperator(
@@ -382,6 +370,11 @@ with DAG(
         python_callable=store_to_mongodb_callable,
     )
 
+    t_success_email = PythonOperator(
+        task_id="success_email",
+        python_callable=success_email_callable,
+    )
+
     t_end = EmptyOperator(
         task_id="end",
         trigger_rule="none_failed_min_one_success",
@@ -407,6 +400,6 @@ with DAG(
 
     [t_embed_conv, t_embed_jour] >> t_embedding_complete
 
-    t_embedding_complete >> t_store
+    t_embedding_complete >> t_store >> t_success_email
 
-    [t_store, t_val_failed] >> t_end
+    [t_success_email, t_val_failed] >> t_end
