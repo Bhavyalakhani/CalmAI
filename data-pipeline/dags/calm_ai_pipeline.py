@@ -20,6 +20,22 @@ sys.path.insert(0, "/opt/airflow/configs")
 
 logger = logging.getLogger("calm_ai_pipeline")
 
+
+def on_dag_success(context):
+    from airflow.utils.email import send_email
+    dag_run = context.get("dag_run")
+    execution_date = dag_run.execution_date if dag_run else "unknown"
+    send_email(
+        to=["jainamgala0202@gmail.com"],
+        subject="CalmAI Pipeline - Run Completed Successfully",
+        html_content=(
+            f"<h3>CalmAI Pipeline Succeeded</h3>"
+            f"<p><b>DAG:</b> calm_ai_pipeline</p>"
+            f"<p><b>Execution Date:</b> {execution_date}</p>"
+            f"<p>All tasks completed without failure.</p>"
+        ),
+    )
+
 default_args = {
     "owner": "calmai",
     "depends_on_past": False,
@@ -296,6 +312,7 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["calmai", "mental-health", "data-pipeline"],
+    on_success_callback=on_dag_success,
 ) as dag:
 
     t_start = PythonOperator(
