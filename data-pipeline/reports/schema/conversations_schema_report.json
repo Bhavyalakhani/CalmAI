@@ -1,0 +1,120 @@
+{
+  "dataset_name": "conversations",
+  "timestamp": "2026-02-12T01:45:24.530804",
+  "total_records": 2745,
+  "passed": 10,
+  "failed": 0,
+  "expectations": [
+    {
+      "name": "column_exists_conversation_id",
+      "success": true,
+      "details": {
+        "column": "conversation_id",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_context",
+      "success": true,
+      "details": {
+        "column": "context",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_response",
+      "success": true,
+      "details": {
+        "column": "response",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_embedding_text",
+      "success": true,
+      "details": {
+        "column": "embedding_text",
+        "found": true
+      }
+    },
+    {
+      "name": "column_unique_conversation_id",
+      "success": "True",
+      "details": {
+        "column": "conversation_id",
+        "duplicates": 0
+      }
+    },
+    {
+      "name": "column_not_null_conversation_id",
+      "success": "True",
+      "details": {
+        "column": "conversation_id",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "column_not_null_context",
+      "success": "True",
+      "details": {
+        "column": "context",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "column_not_null_response",
+      "success": "True",
+      "details": {
+        "column": "response",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "value_range_context_word_count",
+      "success": "True",
+      "details": {
+        "column": "context_word_count",
+        "min_expected": 3,
+        "max_expected": 5000,
+        "actual_min": 5.0,
+        "actual_max": 526.0,
+        "violations": 0
+      }
+    },
+    {
+      "name": "value_range_response_word_count",
+      "success": "True",
+      "details": {
+        "column": "response_word_count",
+        "min_expected": 3,
+        "max_expected": 10000,
+        "actual_min": 6.0,
+        "actual_max": 939.0,
+        "violations": 0
+      }
+    }
+  ],
+  "statistics": {
+    "record_count": 2745,
+    "context_length_min": 26,
+    "context_length_max": 2703,
+    "context_length_mean": 290.36,
+    "context_length_std": 260.64,
+    "context_words_min": 5,
+    "context_words_max": 526,
+    "context_words_mean": 56.81,
+    "context_total_words": 155951,
+    "context_unique_words": 5575,
+    "context_vocab_richness": 0.0357,
+    "response_length_min": 24,
+    "response_length_max": 32739,
+    "response_length_mean": 1035.19,
+    "response_length_std": 1090.86,
+    "response_words_min": 6,
+    "response_words_max": 939,
+    "response_words_mean": 178.31,
+    "response_total_words": 489448,
+    "response_unique_words": 24247,
+    "response_vocab_richness": 0.0495
+  }
+}

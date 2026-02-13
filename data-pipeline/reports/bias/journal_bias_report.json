@@ -1,0 +1,86 @@
+{
+  "dataset_name": "journals",
+  "timestamp": "2026-02-12T01:45:30.946928",
+  "total_records": 994,
+  "total_patients": 10,
+  "patient_distribution": {
+    "total_patients": 4,
+    "entries_per_patient_mean": 99.4,
+    "entries_per_patient_std": 1.07,
+    "entries_per_patient_min": 97,
+    "entries_per_patient_max": 100,
+    "entries_per_patient_median": 100.0
+  },
+  "temporal_patterns": {
+    "entries_by_day": {
+      "Monday": 141,
+      "Tuesday": 147,
+      "Wednesday": 142,
+      "Thursday": 137,
+      "Friday": 141,
+      "Saturday": 147,
+      "Sunday": 138
+    },
+    "entries_by_month": {
+      "1": 95,
+      "2": 74,
+      "3": 51,
+      "4": 31,
+      "5": 49,
+      "6": 84,
+      "7": 103,
+      "8": 102,
+      "9": 99,
+      "10": 103,
+      "11": 99,
+      "12": 103
+    },
+    "entry_gap_mean": 3.06,
+    "entry_gap_median": 3.0,
+    "entry_gap_max": 8
+  },
+  "theme_distribution": {
+    "anxiety": {
+      "count": 76,
+      "percentage": 7.65,
+      "word_count_mean": 24.42
+    },
+    "depression": {
+      "count": 63,
+      "percentage": 6.34,
+      "word_count_mean": 24.25
+    },
+    "positive": {
+      "count": 211,
+      "percentage": 21.23,
+      "word_count_mean": 24.63
+    },
+    "negative": {
+      "count": 19,
+      "percentage": 1.91,
+      "word_count_mean": 24.63
+    },
+    "therapy": {
+      "count": 216,
+      "percentage": 21.73,
+      "word_count_mean": 23.63
+    },
+    "sleep": {
+      "count": 82,
+      "percentage": 8.25,
+      "word_count_mean": 24.35
+    },
+    "social": {
+      "count": 96,
+      "percentage": 9.66,
+      "word_count_mean": 25.06
+    },
+    "work": {
+      "count": 145,
+      "percentage": 14.59,
+      "word_count_mean": 24.1
+    }
+  },
+  "sparse_patients": [],
+  "mitigation_notes": []
+}

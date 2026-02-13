@@ -1,0 +1,106 @@
+{
+  "dataset_name": "journals",
+  "timestamp": "2026-02-12T01:45:24.617615",
+  "total_records": 994,
+  "passed": 10,
+  "failed": 0,
+  "expectations": [
+    {
+      "name": "column_exists_journal_id",
+      "success": true,
+      "details": {
+        "column": "journal_id",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_patient_id",
+      "success": true,
+      "details": {
+        "column": "patient_id",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_therapist_id",
+      "success": true,
+      "details": {
+        "column": "therapist_id",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_entry_date",
+      "success": true,
+      "details": {
+        "column": "entry_date",
+        "found": true
+      }
+    },
+    {
+      "name": "column_exists_content",
+      "success": true,
+      "details": {
+        "column": "content",
+        "found": true
+      }
+    },
+    {
+      "name": "column_unique_journal_id",
+      "success": "True",
+      "details": {
+        "column": "journal_id",
+        "duplicates": 0
+      }
+    },
+    {
+      "name": "column_not_null_journal_id",
+      "success": "True",
+      "details": {
+        "column": "journal_id",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "column_not_null_patient_id",
+      "success": "True",
+      "details": {
+        "column": "patient_id",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "column_not_null_content",
+      "success": "True",
+      "details": {
+        "column": "content",
+        "null_count": 0
+      }
+    },
+    {
+      "name": "value_range_word_count",
+      "success": "True",
+      "details": {
+        "column": "word_count",
+        "min_expected": 3,
+        "max_expected": 1000,
+        "actual_min": 17.0,
+        "actual_max": 32.0,
+        "violations": 0
+      }
+    }
+  ],
+  "statistics": {
+    "record_count": 994,
+    "content_length_min": 102,
+    "content_length_max": 198,
+    "content_length_mean": 143.47,
+    "content_length_std": 13.95,
+    "content_words_min": 17,
+    "content_words_max": 32,
+    "content_words_mean": 24.22,
+    "content_total_words": 24071,
+    "content_unique_words": 4991,
+    "content_vocab_richness": 0.2073
+  }
+}
