@@ -196,3 +196,23 @@ class TestVisualizations:
         for p in paths:
             assert p.exists()
             assert p.suffix == ".png"
+
+
+# topic overlap (NEW)
+class TestTopicOverlap:
+
+    def test_overlap_stats_present(self, analyzer_with_data):
+        overlap = analyzer_with_data.analyze_topic_overlap()
+        assert "multi_topic_count" in overlap
+        assert "no_topic_count" in overlap
+        assert "top_co_occurrences" in overlap
+
+    def test_multi_topic_when_context_matches_multiple(self, analyzer):
+        analyzer.df = pd.DataFrame({
+            "context": ["I feel anxious about my job and work"],
+            "response": ["That must be stressful"],
+            "response_word_count": [10],
+        })
+        analyzer.classify_topics()
+        overlap = analyzer.analyze_topic_overlap()
+        assert overlap["multi_topic_count"] == 1

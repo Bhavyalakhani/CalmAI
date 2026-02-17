@@ -217,3 +217,46 @@ class TestReport:
         path = validator.save_report(report, "test_report.json")
         assert path.exists()
         assert path.name == "test_report.json"
+
+
+class TestExpectColumnType:
+
+    def test_passes_on_correct_type(self, validator, conversations_processed_df):
+        result = validator.expect_column_type(conversations_processed_df, "context_word_count", "int")
+        assert result.success is True
+
+    def test_fails_on_wrong_type(self, validator, conversations_processed_df):
+        result = validator.expect_column_type(conversations_processed_df, "context", "int")
+        assert result.success is False
+
+
+class TestExpectStringNotEmpty:
+
+    def test_passes_on_non_empty_strings(self, validator, conversations_processed_df):
+        result = validator.expect_string_not_empty(conversations_processed_df, "context")
+        assert result.success is True
+
+    def test_fails_on_whitespace_only(self, validator):
+        df = pd.DataFrame({"text": ["hello", "  ", "world", ""]})
+        result = validator.expect_string_not_empty(df, "text")
+        assert result.success is False
+        assert result.details["empty_count"] == 2
+
+
+class TestValidateIncomingJournals:
+
+    def test_validates_incoming_journals(self, validator):
+        df = pd.DataFrame({
+            'journal_id': ['j1', 'j2'],
+            'patient_id': ['p1', 'p2'],
+            'content': ['Valid entry here', 'Another entry'],
+            'entry_date': pd.to_datetime(['2025-01-01', '2025-01-02'])
+        })
+        validator.settings.INCOMING_JOURNAL_MIN_LENGTH = 10
+        validator.settings.INCOMING_JOURNAL_MAX_LENGTH = 10000
+        
+        results = validator.validate_incoming_journals(df)
+        
+        assert len(results) > 0
+        passed = sum(1 for r in results if r.success)
+        assert passed > 0

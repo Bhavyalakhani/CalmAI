@@ -217,3 +217,19 @@ def embedding_service():
     service.model = make_fake_model()
     service.embedding_dim = FAKE_DIM
     return service
+
+
+# patient analytics fixtures
+@pytest.fixture
+def analytics():
+    from analytics.patient_analytics import PatientAnalytics
+    return PatientAnalytics()
+
+
+@pytest.fixture
+def sample_journals():
+    return [
+        {"content": "Feeling anxious and worried today", "entry_date": "2025-01-01"},
+        {"content": "Had a good therapy session", "entry_date": "2025-01-03"},
+        {"content": "Work stress is overwhelming", "entry_date": "2025-01-05"},
+    ]
