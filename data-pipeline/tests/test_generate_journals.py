@@ -1,13 +1,12 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# tests for generate_journals.py
+# covers json parsing (clean, markdown-wrapped, malformed), entry processing,
+# raw response saving, and skip-existing logic for the gemini api
 
 import pytest
 import json
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime
-import pandas as pd
+from unittest.mock import Mock, patch
+
 from acquisition.generate_journals import JournalGenerator
 
 
@@ -33,115 +32,146 @@ def sample_patient():
         "background": "Test background",
         "concerns": ["anxiety", "stress"],
         "writing_style": "casual",
-        "start_date": "2025-01-01"
+        "start_date": "2025-01-01",
     }
 
 
-class TestJournalGenerator:
-    
-    def test_get_end_date(self, generator):
-        result = generator.get_end_date("2025-01-01")
-        assert result == "2025-10-28"
-    
-    def test_parse_json_response_clean(self, generator):
-        json_text = '[{"entry_number": 1, "date": "2025-01-01", "content": "Test entry"}]'
-        result = generator.parse_json_response(json_text)
-        
+# date calculation
+class TestDateCalc:
+
+    def test_end_date_is_300_days_later(self, generator):
+        # start_date + 300 days = 2025-10-28
+        assert generator.get_end_date("2025-01-01") == "2025-10-28"
+
+    def test_end_date_with_leap_year(self, generator):
+        # 2024 is a leap year, make sure it doesn't break
+        result = generator.get_end_date("2024-01-01")
+        assert result == "2024-10-27"
+
+
+# json parsing
+class TestJsonParsing:
+
+    def test_parses_clean_json(self, generator):
+        raw = '[{"entry_number": 1, "date": "2025-01-01", "content": "Test entry"}]'
+        result = generator.parse_json_response(raw)
+
         assert len(result) == 1
-        assert result[0]["entry_number"] == 1
         assert result[0]["content"] == "Test entry"
-    
-    def test_parse_json_response_with_markdown(self, generator):
-        json_text = '```json\n[{"entry_number": 1, "date": "2025-01-01", "content": "Test"}]\n```'
-        result = generator.parse_json_response(json_text)
-        
+
+    def test_strips_markdown_fences(self, generator):
+        # gemini often wraps json in ```json ... ```
+        raw = '```json\n[{"entry_number": 1, "date": "2025-01-01", "content": "Test"}]\n```'
+        result = generator.parse_json_response(raw)
         assert len(result) == 1
-        assert result[0]["entry_number"] == 1
-    
-    def test_parse_json_response_regex_fallback(self, generator):
-        malformed = '{"entry_number": 1, "date": "2025-01-01", "content": "Test entry"}'
-        result = generator.parse_json_response(malformed)
-        
-        # Single dict gets parsed as valid JSON
+
+    def test_handles_single_object_instead_of_array(self, generator):
+        # edge case: model returns a single dict instead of a list
+        raw = '{"entry_number": 1, "date": "2025-01-01", "content": "Test entry"}'
+        result = generator.parse_json_response(raw)
         assert result["entry_number"] == 1
-        assert result["content"] == "Test entry"
-    
-    def test_process_entries(self, generator):
+
+    def test_raises_on_totally_broken_json(self, generator):
+        # edge case: complete garbage
+        with pytest.raises(json.JSONDecodeError):
+            generator.parse_json_response("not json at all {{{")
+
+
+# entry processing
+class TestEntryProcessing:
+
+    def test_creates_proper_journal_entries(self, generator):
         parsed = [
             {"entry_number": 1, "date": "2025-01-01", "content": "First entry"},
-            {"entry_number": 2, "date": "2025-01-03", "content": "Second entry"}
+            {"entry_number": 2, "date": "2025-01-03", "content": "Second entry"},
         ]
-        
         result = generator.process_entries(parsed, "P001", "T001")
-        
+
         assert len(result) == 2
         assert result[0]["journal_id"] == "P001_entry_001"
         assert result[0]["patient_id"] == "P001"
         assert result[0]["therapist_id"] == "T001"
         assert result[0]["word_count"] == 2
-    
-    def test_process_entries_skip_empty(self, generator):
+
+    def test_skips_entries_with_empty_content(self, generator):
         parsed = [
             {"entry_number": 1, "date": "2025-01-01", "content": "Valid entry"},
-            {"entry_number": 2, "date": "2025-01-02", "content": ""}
+            {"entry_number": 2, "date": "2025-01-02", "content": ""},
         ]
-        
         result = generator.process_entries(parsed, "P001", "T001")
-        
         assert len(result) == 1
-    
-    def test_process_entries_alternative_keys(self, generator):
-        parsed = [
-            {"entryNumber": 1, "entry_date": "2025-01-01", "text": "Test"}
-        ]
-        
+
+    def test_handles_alternative_key_names(self, generator):
+        # gemini sometimes uses different key names like entryNumber or text
+        parsed = [{"entryNumber": 1, "entry_date": "2025-01-01", "text": "Test"}]
         result = generator.process_entries(parsed, "P001", "T001")
-        
+
         assert len(result) == 1
         assert result[0]["content"] == "Test"
-    
-    @patch('acquisition.generate_journals.genai.Client')
-    def test_fetch_patient_response_success(self, mock_client_class, generator, sample_patient):
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.text = '{"result": "success"}'
-        mock_client.models.generate_content.return_value = mock_response
-        generator.client = mock_client
-        
-        result = generator.fetch_patient_response(sample_patient)
-        
-        assert result == '{"result": "success"}'
-        mock_client.models.generate_content.assert_called_once()
-    
-    def test_save_raw_response(self, generator, tmp_path):
+
+    def test_returns_empty_list_for_no_valid_entries(self, generator):
+        # edge case: all entries have empty content
+        parsed = [
+            {"entry_number": 1, "date": "2025-01-01", "content": ""},
+            {"entry_number": 2, "date": "2025-01-02", "content": ""},
+        ]
+        result = generator.process_entries(parsed, "P001", "T001")
+        assert result == []
+
+
+# save raw response
+class TestSaveRaw:
+
+    def test_saves_json_to_disk(self, generator, tmp_path):
         generator.settings.RAW_DATA_DIR = tmp_path
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir()
-        
+
         output = generator.save_raw_response("P001", "test response", raw_dir)
-        
+
         assert output.exists()
         with open(output) as f:
             data = json.load(f)
         assert data["patient_id"] == "P001"
         assert data["raw_response"] == "test response"
-    
-    @patch.object(JournalGenerator, 'load_config')
-    @patch.object(JournalGenerator, 'fetch_patient_response')
-    @patch.object(JournalGenerator, 'save_raw_response')
-    def test_fetch_all_skip_existing(self, mock_save, mock_fetch, mock_load, 
-                                     generator, tmp_path, sample_patient):
+        assert "timestamp" in data
+
+
+# fetch patient response
+class TestFetchResponse:
+
+    def test_returns_model_response_text(self, generator, sample_patient):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.text = '{"result": "success"}'
+        mock_client.models.generate_content.return_value = mock_response
+        generator.client = mock_client
+
+        result = generator.fetch_patient_response(sample_patient)
+
+        assert result == '{"result": "success"}'
+        mock_client.models.generate_content.assert_called_once()
+
+
+# skip existing
+class TestSkipExisting:
+
+    @patch.object(JournalGenerator, "load_config")
+    @patch.object(JournalGenerator, "fetch_patient_response")
+    @patch.object(JournalGenerator, "save_raw_response")
+    def test_does_not_refetch_existing_files(self, mock_save, mock_fetch, mock_load,
+                                              generator, tmp_path, sample_patient):
         generator.settings.RAW_DATA_DIR = tmp_path
         generator.settings.ensure_directories = Mock()
         generator.cfg = {"patients": [sample_patient]}
         mock_load.return_value = generator.cfg
-        
+
+        # simulate an existing raw file
         raw_dir = tmp_path / "journals" / "raw_responses"
         raw_dir.mkdir(parents=True)
-        existing = raw_dir / "P001_raw.json"
-        existing.touch()
-        
+        (raw_dir / "P001_raw.json").touch()
+
         generator.client = Mock()
-        result = generator.fetch_all(skip_existing=True)
-        
+        generator.fetch_all(skip_existing=True)
+
         mock_fetch.assert_not_called()

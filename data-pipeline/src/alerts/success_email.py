@@ -1,3 +1,6 @@
+# html success email sent after the pipeline completes
+# includes task durations table, mongodb stats
+
 from airflow.utils.email import send_email
 from datetime import datetime, timezone
 
@@ -12,6 +15,7 @@ RECIPIENTS = [
 
 MINION_GIF_URL = "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcTl0cWRsMjVqcHB6Ynlxd2I2NTF6b2k4OGl2ZXN4NnN0MnF3aSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/11sBLVxNs7v6WA/giphy.gif"
 
+# task display order for the duration table
 TASK_ORDER = [
     ("start", "Start"),
     ("download_conversations", "Download Conversations"),
@@ -66,7 +70,7 @@ def send_success_email(**context):
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto;">
         <div style="background:#4CAF50;padding:20px;text-align:center;border-radius:8px 8px 0 0;">
-            <h1 style="color:white;margin:0;">CalmAI Pipeline Succeeded</h1>
+            <h1 style="color:white;margin:0;">CalmAI Static Data Pipeline Succeeded</h1>
         </div>
 
         <div style="padding:20px;background:#f9f9f9;border:1px solid #ddd;">

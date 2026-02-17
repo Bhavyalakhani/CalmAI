@@ -1,3 +1,7 @@
+# preprocesses synthetic journal entries
+# parses dates, computes text stats, adds temporal features
+# (day_of_week, week_number, month, year, days_since_last)
+
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -6,7 +10,7 @@ import pandas as pd
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config # pyright: ignore[reportMissingImports]
+import config
 
 from .base_preprocessor import BasePreprocessor
 
@@ -21,12 +25,14 @@ class JournalPreprocessor:
         self.preprocessor = BasePreprocessor()
         self.df = None
     
+    # paths
     def get_input_path(self) -> Path:
         return self.settings.RAW_DATA_DIR / "journals" / "synthetic_journals.parquet"
-    
+
     def get_output_path(self) -> Path:
         return self.settings.PROCESSED_DATA_DIR / "journals" / "processed_journals.parquet"
-    
+
+    # loading
     def load_data(self) -> pd.DataFrame:
         input_path = self.get_input_path()
         
@@ -37,16 +43,25 @@ class JournalPreprocessor:
         logger.info(f"Loaded {len(self.df)} journal entries")
         return self.df
     
+    # date parsing — invalid dates (e.g. feb 29 in non-leap year) get forward-filled per patient
     def parse_dates(self) -> pd.DataFrame:
         if "entry_date" in self.df.columns:
             self.df["entry_date"] = pd.to_datetime(self.df["entry_date"], errors="coerce")
             
             invalid_dates = self.df["entry_date"].isna().sum()
             if invalid_dates > 0:
-                logger.warning(f"Found {invalid_dates} invalid dates")
+                logger.warning(f"Found {invalid_dates} invalid dates, forward-filling per patient")
+                self.df["entry_date"] = (
+                    self.df.groupby("patient_id")["entry_date"]
+                    .transform(lambda s: s.ffill().bfill())
+                )
+                still_null = self.df["entry_date"].isna().sum()
+                if still_null > 0:
+                    logger.warning(f"  {still_null} dates still null after fill")
         
         return self.df
     
+    # text preprocessing and stats
     def apply_preprocessing(self) -> pd.DataFrame:
         self.df["content"] = self.df["content"].fillna("").astype(str)
         self.df["content"] = self.df["content"].apply(self.preprocessor.process)
@@ -55,9 +70,12 @@ class JournalPreprocessor:
         self.df["word_count"] = stats.apply(lambda x: x.word_count)
         self.df["char_count"] = stats.apply(lambda x: x.char_count)
         self.df["sentence_count"] = stats.apply(lambda x: x.sentence_count)
+        self.df["avg_word_length"] = stats.apply(lambda x: x.avg_word_length)
         
+        self.df["is_embedded"] = False
         return self.df
     
+    # temporal feature engineering
     def add_temporal_features(self) -> pd.DataFrame:
         if "entry_date" not in self.df.columns:
             return self.df
@@ -71,6 +89,7 @@ class JournalPreprocessor:
         
         return self.df
     
+    # gap between entries per patient (first entry = 0)
     def calculate_days_since_last(self) -> pd.DataFrame:
         if "entry_date" not in self.df.columns or "patient_id" not in self.df.columns:
             return self.df
@@ -87,6 +106,7 @@ class JournalPreprocessor:
         
         return self.df
     
+    # format: "[YYYY-MM-DD] content" if date exists, else just content
     def create_embedding_text(self) -> pd.DataFrame:
         def format_embedding(row):
             date_str = ""
@@ -98,6 +118,7 @@ class JournalPreprocessor:
         self.df["embedding_text"] = self.df.apply(format_embedding, axis=1)
         return self.df
     
+    # removes duplicates and empty content
     def validate(self) -> bool:
         required_columns = ["journal_id", "patient_id", "content"]
         missing = [col for col in required_columns if col not in self.df.columns]
@@ -119,6 +140,12 @@ class JournalPreprocessor:
             logger.warning(f"Found {empty_content} entries with empty content")
             self.df = self.df[self.df["content"].str.strip() != ""].reset_index(drop=True)
         
+        if "embedding_text" in self.df.columns:
+            empty_embedding = (self.df["embedding_text"].str.strip() == "").sum()
+            if empty_embedding > 0:
+                logger.warning(f"Found {empty_embedding} entries with empty embedding_text")
+                self.df = self.df[self.df["embedding_text"].str.strip() != ""].reset_index(drop=True)
+        
         return True
     
     def save(self) -> Path:
@@ -136,13 +163,36 @@ class JournalPreprocessor:
             logger.info(f"Output already exists: {output_path}")
             return output_path
         
+        logger.info("Step 1/7: Loading raw journal data")
         self.load_data()
+        logger.info(f"{len(self.df)} entries loaded")
+        
+        logger.info("Step 2/7: Parsing dates")
         self.parse_dates()
+        valid_dates = self.df["entry_date"].notna().sum() if "entry_date" in self.df.columns else 0
+        logger.info(f"{valid_dates} valid dates parsed")
+        
+        logger.info("Step 3/7: Applying text preprocessing + feature engineering")
         self.apply_preprocessing()
+        logger.info(f"Added word_count, char_count, sentence_count, avg_word_length")
+        
+        logger.info("Step 4/7: Adding temporal features")
         self.add_temporal_features()
+        logger.info(f"Added day_of_week, week_number, month, year")
+        
+        logger.info("Step 5/7: Calculating days_since_last per patient")
         self.calculate_days_since_last()
+        logger.info(f"days_since_last computed for {self.df['patient_id'].nunique()} patients")
+        
+        logger.info("Step 6/7: Creating embedding text")
         self.create_embedding_text()
+        logger.info(f"embedding_text column created")
+        
+        logger.info("Step 7/7: Validating and filtering")
+        before_validate = len(self.df)
         self.validate()
+        logger.info(f"{before_validate} → {len(self.df)} entries (filtered {before_validate - len(self.df)} invalid)")
+        
         return self.save()
 
 

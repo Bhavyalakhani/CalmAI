@@ -1,3 +1,7 @@
+# embedding service and pipeline functions
+# uses sentence-transformers (all-MiniLM-L6-v2, 384 dims) to embed
+# conversations, journals, and incoming runtime journals
+
 import logging
 import time
 from pathlib import Path
@@ -9,11 +13,12 @@ from sentence_transformers import SentenceTransformer
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config  # pyright: ignore[reportMissingImports]
+import config
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from preprocessing.base_preprocessor import BasePreprocessor  # pyright: ignore[reportMissingImports]
+from preprocessing.base_preprocessor import BasePreprocessor
 
+# columns that every embedded journal parquet must have
 JOURNAL_EMBEDDING_SCHEMA = [
     "journal_id",
     "patient_id",
@@ -23,6 +28,7 @@ JOURNAL_EMBEDDING_SCHEMA = [
     "word_count",
     "char_count",
     "sentence_count",
+    "avg_word_length",
     "day_of_week",
     "week_number",
     "month",
@@ -39,6 +45,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+# core service
+
 class EmbeddingService:
 
     def __init__(self, model_name: Optional[str] = None, batch_size: int = 64):
@@ -48,6 +56,7 @@ class EmbeddingService:
         self.model = None
         self.embedding_dim = None
 
+    # caches the model so we only load once
     def load_model(self) -> SentenceTransformer:
         if self.model is not None:
             return self.model
@@ -60,6 +69,7 @@ class EmbeddingService:
         logger.info(f"Model loaded in {elapsed:.2f}s | Embedding dimension: {self.embedding_dim}")
         return self.model
 
+    # encodes in batches and logs progress every 10 batches
     def embed_texts(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
         self.load_model()
 
@@ -107,6 +117,8 @@ class EmbeddingService:
         logger.info(f"Added 'embedding' column ({self.embedding_dim} dims) to DataFrame")
         return df
 
+
+# pipeline functions for batch embedding
 
 def embed_conversations(
     input_path: Optional[Path] = None,
@@ -201,6 +213,8 @@ def embed_journals(
     return output_path
 
 
+# preprocesses raw incoming journals before embedding
+# used for runtime journal ingestion (not the batch pipeline)
 def _preprocess_journal_df(df: pd.DataFrame) -> pd.DataFrame:
     preprocessor = BasePreprocessor()
 
@@ -211,6 +225,7 @@ def _preprocess_journal_df(df: pd.DataFrame) -> pd.DataFrame:
     df["word_count"] = stats.apply(lambda x: x.word_count)
     df["char_count"] = stats.apply(lambda x: x.char_count)
     df["sentence_count"] = stats.apply(lambda x: x.sentence_count)
+    df["avg_word_length"] = stats.apply(lambda x: x.avg_word_length)
 
     if "entry_date" in df.columns:
         df["entry_date"] = pd.to_datetime(df["entry_date"], errors="coerce")
@@ -240,20 +255,24 @@ def _preprocess_journal_df(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-
+# runtime incoming journal embedding
+# accepts a list of dicts or dataframe, preprocesses, embeds, and returns dataframe
+# used by dag 2 (incoming_journals_pipeline) — no file i/o
 def embed_incoming_journals(
-    journals: List[dict],
-    output_dir: Optional[Path] = None,
+    journals,
     model_name: Optional[str] = None,
     batch_size: int = 64,
-) -> Path:
-    settings = config.settings
+) -> pd.DataFrame:
+    if isinstance(journals, list):
+        df = pd.DataFrame(journals)
+    elif isinstance(journals, pd.DataFrame):
+        df = journals.copy()
+    else:
+        raise TypeError(f"Expected list or DataFrame, got {type(journals)}")
 
-    if output_dir is None:
-        output_dir = settings.PROJECT_ROOT / "data" / "embeddings" / "incoming_journals"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    df = pd.DataFrame(journals)
+    if df.empty:
+        logger.warning("No journals to embed — returning empty DataFrame")
+        return df
 
     required_cols = ["journal_id", "patient_id", "content"]
     missing = [c for c in required_cols if c not in df.columns]
@@ -277,8 +296,5 @@ def embed_incoming_journals(
             df[col] = None
     df = df[JOURNAL_EMBEDDING_SCHEMA]
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"incoming_{timestamp}.parquet"
-    df.to_parquet(output_path, index=False)
-    logger.info(f"Saved {len(df)} incoming journal embeddings to {output_path}")
-    return output_path
+    logger.info(f"Embedded {len(df)} incoming journal entries")
+    return df

@@ -1,3 +1,7 @@
+# custom expectation-based schema validation
+# checks column existence, uniqueness, nulls, ranges, types, and empty strings
+# generates json reports with pass rates
+
 import json
 import logging
 from pathlib import Path
@@ -10,12 +14,13 @@ import numpy as np
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config # pyright: ignore[reportMissingImports]
+import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
+# result of a single expectation check
 @dataclass
 class ExpectationResult:
     name: str
@@ -23,6 +28,7 @@ class ExpectationResult:
     details: Dict[str, Any]
 
 
+# full report with pass/fail stats
 @dataclass
 class ValidationReport:
     dataset_name: str
@@ -30,6 +36,7 @@ class ValidationReport:
     total_records: int
     passed: int
     failed: int
+    pass_rate: float
     expectations: List[Dict]
     statistics: Dict[str, Any]
 
@@ -51,6 +58,8 @@ class SchemaValidator:
         reports_dir.mkdir(parents=True, exist_ok=True)
         return reports_dir
     
+    # expectation primitives
+
     def expect_column_exists(self, df: pd.DataFrame, column: str) -> ExpectationResult:
         success = column in df.columns
         return ExpectationResult(
@@ -68,7 +77,7 @@ class SchemaValidator:
             )
         
         duplicates = df[column].duplicated().sum()
-        success = duplicates == 0
+        success = bool(duplicates == 0)
         return ExpectationResult(
             name=f"column_unique_{column}",
             success=success,
@@ -84,7 +93,7 @@ class SchemaValidator:
             )
         
         null_count = df[column].isna().sum()
-        success = null_count == 0
+        success = bool(null_count == 0)
         return ExpectationResult(
             name=f"column_not_null_{column}",
             success=success,
@@ -107,7 +116,7 @@ class SchemaValidator:
         if max_val is not None:
             violations += (df[column] > max_val).sum()
         
-        success = violations == 0
+        success = bool(violations == 0)
         return ExpectationResult(
             name=f"value_range_{column}",
             success=success,
@@ -121,6 +130,44 @@ class SchemaValidator:
             }
         )
     
+    def expect_column_type(self, df: pd.DataFrame, column: str, expected_type: str) -> ExpectationResult:
+        if column not in df.columns:
+            return ExpectationResult(
+                name=f"column_type_{column}",
+                success=False,
+                details={"column": column, "error": "column not found"}
+            )
+        
+        actual_type = str(df[column].dtype)
+        success = expected_type.lower() in actual_type.lower()
+        return ExpectationResult(
+            name=f"column_type_{column}",
+            success=success,
+            details={
+                "column": column,
+                "expected_type": expected_type,
+                "actual_type": actual_type
+            }
+        )
+    
+    def expect_string_not_empty(self, df: pd.DataFrame, column: str) -> ExpectationResult:
+        if column not in df.columns:
+            return ExpectationResult(
+                name=f"string_not_empty_{column}",
+                success=False,
+                details={"column": column, "error": "column not found"}
+            )
+        
+        empty_count = (df[column].astype(str).str.strip() == "").sum()
+        success = bool(empty_count == 0)
+        return ExpectationResult(
+            name=f"string_not_empty_{column}",
+            success=success,
+            details={"column": column, "empty_count": int(empty_count)}
+        )
+    
+    # text statistics helpers
+
     def compute_text_statistics(self, df: pd.DataFrame, text_column: str) -> Dict[str, Any]:
         if text_column not in df.columns:
             return {}
@@ -152,43 +199,125 @@ class SchemaValidator:
             f"{text_column}_vocab_richness": round(len(unique_words) / len(words), 4) if words else 0
         }
     
+    # full dataset validators
+
     def validate_conversations(self, df: pd.DataFrame) -> List[ExpectationResult]:
+        logger.info(f"Running conversation schema validation on {len(df)} records")
         results = []
-        
+
+        # column existence
         required_columns = ["conversation_id", "context", "response", "embedding_text"]
         for col in required_columns:
             results.append(self.expect_column_exists(df, col))
         
+        # uniqueness
         results.append(self.expect_column_unique(df, "conversation_id"))
+
+        # nulls
         results.append(self.expect_column_not_null(df, "conversation_id"))
         results.append(self.expect_column_not_null(df, "context"))
         results.append(self.expect_column_not_null(df, "response"))
+        results.append(self.expect_column_not_null(df, "embedding_text"))
         
+        # empty string checks
+        results.append(self.expect_string_not_empty(df, "context"))
+        results.append(self.expect_string_not_empty(df, "response"))
+        results.append(self.expect_string_not_empty(df, "embedding_text"))
+        
+        # numeric range checks
         if "context_word_count" in df.columns:
             results.append(self.expect_value_range(df, "context_word_count", min_val=3, max_val=5000))
         
         if "response_word_count" in df.columns:
             results.append(self.expect_value_range(df, "response_word_count", min_val=3, max_val=10000))
         
+        if "context_char_count" in df.columns:
+            results.append(self.expect_value_range(df, "context_char_count", min_val=10, max_val=50000))
+        
+        if "response_char_count" in df.columns:
+            results.append(self.expect_value_range(df, "response_char_count", min_val=10, max_val=100000))
+        
+        if "context_sentence_count" in df.columns:
+            results.append(self.expect_value_range(df, "context_sentence_count", min_val=1, max_val=500))
+        
+        if "response_sentence_count" in df.columns:
+            results.append(self.expect_value_range(df, "response_sentence_count", min_val=1, max_val=1000))
+        
+        if "context_avg_word_length" in df.columns:
+            results.append(self.expect_value_range(df, "context_avg_word_length", min_val=1.0, max_val=30.0))
+        
+        if "response_avg_word_length" in df.columns:
+            results.append(self.expect_value_range(df, "response_avg_word_length", min_val=1.0, max_val=30.0))
+        
+        passed = sum(1 for r in results if r.success)
+        logger.info(f"Conversation validation complete: {passed}/{len(results)} checks passed")
         return results
     
     def validate_journals(self, df: pd.DataFrame) -> List[ExpectationResult]:
+        logger.info(f"Running journal schema validation on {len(df)} records")
         results = []
-        
+
+        # column existence
         required_columns = ["journal_id", "patient_id", "therapist_id", "entry_date", "content"]
         for col in required_columns:
             results.append(self.expect_column_exists(df, col))
         
+        # uniqueness
         results.append(self.expect_column_unique(df, "journal_id"))
+
+        # nulls
         results.append(self.expect_column_not_null(df, "journal_id"))
         results.append(self.expect_column_not_null(df, "patient_id"))
+        results.append(self.expect_column_not_null(df, "therapist_id"))
+        results.append(self.expect_column_not_null(df, "entry_date"))
         results.append(self.expect_column_not_null(df, "content"))
         
+        # empty string checks
+        results.append(self.expect_string_not_empty(df, "content"))
+
+        # type checks
+        results.append(self.expect_column_type(df, "entry_date", "datetime"))
+
+        # embedding text checks
+        if "embedding_text" in df.columns:
+            results.append(self.expect_column_not_null(df, "embedding_text"))
+            results.append(self.expect_string_not_empty(df, "embedding_text"))
+        
+        # text stat ranges
         if "word_count" in df.columns:
             results.append(self.expect_value_range(df, "word_count", min_val=3, max_val=1000))
         
+        if "char_count" in df.columns:
+            results.append(self.expect_value_range(df, "char_count", min_val=10, max_val=10000))
+        
+        if "sentence_count" in df.columns:
+            results.append(self.expect_value_range(df, "sentence_count", min_val=1, max_val=200))
+        
+        if "avg_word_length" in df.columns:
+            results.append(self.expect_value_range(df, "avg_word_length", min_val=1.0, max_val=30.0))
+        
+        # temporal ranges
+        if "day_of_week" in df.columns:
+            results.append(self.expect_value_range(df, "day_of_week", min_val=0, max_val=6))
+        
+        if "week_number" in df.columns:
+            results.append(self.expect_value_range(df, "week_number", min_val=1, max_val=53))
+        
+        if "month" in df.columns:
+            results.append(self.expect_value_range(df, "month", min_val=1, max_val=12))
+        
+        if "year" in df.columns:
+            results.append(self.expect_value_range(df, "year", min_val=2020, max_val=2030))
+        
+        if "days_since_last" in df.columns:
+            results.append(self.expect_value_range(df, "days_since_last", min_val=0, max_val=365))
+        
+        passed = sum(1 for r in results if r.success)
+        logger.info(f"Journal validation complete: {passed}/{len(results)} checks passed")
         return results
     
+    # report generation and saving
+
     def generate_report(self, dataset_name: str, df: pd.DataFrame, 
                        results: List[ExpectationResult], 
                        text_columns: List[str]) -> ValidationReport:
@@ -201,6 +330,7 @@ class SchemaValidator:
         
         passed = sum(1 for r in results if r.success)
         failed = len(results) - passed
+        pass_rate = round((passed / len(results)) * 100, 2) if results else 0.0
         
         return ValidationReport(
             dataset_name=dataset_name,
@@ -208,6 +338,7 @@ class SchemaValidator:
             total_records=len(df),
             passed=passed,
             failed=failed,
+            pass_rate=pass_rate,
             expectations=[asdict(r) for r in results],
             statistics=statistics
         )
@@ -230,9 +361,11 @@ class SchemaValidator:
             logger.warning(f"Conversations data not found: {data_path}")
             return None
         
+        logger.info("Step 1/3: Loading processed conversations")
         df = pd.read_parquet(data_path)
-        logger.info(f"Validating {len(df)} conversations")
+        logger.info(f"  Loaded {len(df)} conversations")
         
+        logger.info("Step 2/3: Running validation expectations")
         results = self.validate_conversations(df)
         report = self.generate_report(
             "conversations", 
@@ -241,9 +374,10 @@ class SchemaValidator:
             ["context", "response"]
         )
         
+        logger.info("Step 3/3: Saving validation report")
         self.save_report(report, "conversations_schema_report.json")
         
-        logger.info(f"Validation: {report.passed} passed, {report.failed} failed")
+        logger.info(f"Conversations validation: {report.passed}/{report.passed + report.failed} passed ({report.pass_rate}%)")
         return report
     
     def run_journals(self, skip_existing: bool = True) -> Optional[ValidationReport]:
@@ -257,9 +391,11 @@ class SchemaValidator:
             logger.warning(f"Journals data not found: {data_path}")
             return None
         
+        logger.info("Step 1/3: Loading processed journals")
         df = pd.read_parquet(data_path)
-        logger.info(f"Validating {len(df)} journals")
+        logger.info(f"  Loaded {len(df)} journals")
         
+        logger.info("Step 2/3: Running validation expectations")
         results = self.validate_journals(df)
         report = self.generate_report(
             "journals",
@@ -268,9 +404,10 @@ class SchemaValidator:
             ["content"]
         )
         
+        logger.info("Step 3/3: Saving validation report")
         self.save_report(report, "journals_schema_report.json")
         
-        logger.info(f"Validation: {report.passed} passed, {report.failed} failed")
+        logger.info(f"Journals validation: {report.passed}/{report.passed + report.failed} passed ({report.pass_rate}%)")
         return report
     
     def run(self, skip_existing: bool = True) -> Dict[str, Optional[ValidationReport]]:
@@ -280,6 +417,78 @@ class SchemaValidator:
             "conversations": self.run_conversations(skip_existing),
             "journals": self.run_journals(skip_existing)
         }
+
+    # incoming journal validation for dag 2 (runtime entries from backend)
+
+    def validate_incoming_journals(self, df: pd.DataFrame) -> List[ExpectationResult]:
+        """validate incoming journals before embedding and storage.
+        checks content length, required fields, date validity, and spam patterns."""
+        import re
+        logger.info(f"Validating {len(df)} incoming journal entries")
+        results = []
+
+        # required columns
+        for col in ["journal_id", "patient_id", "content"]:
+            results.append(self.expect_column_exists(df, col))
+            results.append(self.expect_column_not_null(df, col))
+
+        # content must not be empty
+        if "content" in df.columns:
+            results.append(self.expect_string_not_empty(df, "content"))
+
+        # content length bounds
+        min_len = self.settings.INCOMING_JOURNAL_MIN_LENGTH
+        max_len = self.settings.INCOMING_JOURNAL_MAX_LENGTH
+
+        if "content" in df.columns:
+            lengths = df["content"].astype(str).str.len()
+            too_short = int((lengths < min_len).sum())
+            too_long = int((lengths > max_len).sum())
+            results.append(ExpectationResult(
+                name="content_length_bounds",
+                success=bool(too_short == 0 and too_long == 0),
+                details={
+                    "min_length": min_len,
+                    "max_length": max_len,
+                    "too_short": too_short,
+                    "too_long": too_long,
+                }
+            ))
+
+            # detect spam / low-quality content (repeated chars, all caps, url-only)
+            def _is_spam(text: str) -> bool:
+                if len(text) > 20 and len(set(text.strip())) <= 2:
+                    return True
+                if len(text) > 50 and text.strip() == text.strip().upper() and text.strip().isalpha():
+                    return True
+                if text.strip().startswith("http://") or text.strip().startswith("https://"):
+                    return True
+                return False
+
+            spam_count = int(df["content"].astype(str).apply(_is_spam).sum())
+            results.append(ExpectationResult(
+                name="content_not_spam",
+                success=bool(spam_count == 0),
+                details={"spam_count": spam_count}
+            ))
+
+        # entry_date should not be in the future
+        if "entry_date" in df.columns:
+            dates = pd.to_datetime(df["entry_date"], errors="coerce")
+            future_count = int((dates > pd.Timestamp.now()).sum())
+            results.append(ExpectationResult(
+                name="entry_date_not_future",
+                success=bool(future_count == 0),
+                details={"future_count": future_count}
+            ))
+
+        # journal_id uniqueness within batch
+        if "journal_id" in df.columns:
+            results.append(self.expect_column_unique(df, "journal_id"))
+
+        passed = sum(1 for r in results if r.success)
+        logger.info(f"Incoming journal validation: {passed}/{len(results)} checks passed")
+        return results
 
 
 if __name__ == "__main__":

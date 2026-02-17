@@ -1,3 +1,6 @@
+# downloads huggingface datasets for the conversation pipeline
+# handles two datasets: mental health counseling conversations and counsel-chat
+
 import logging
 from pathlib import Path
 from datasets import load_dataset
@@ -8,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class DataDownloader:
-    
+
+    # dataset configs
     DATASET_1 = {
         "name": "Amod/mental_health_counseling_conversations",
         "output_file": "mental_health_conversations.parquet",
@@ -27,6 +31,7 @@ class DataDownloader:
         self.output_dir = output_dir or Path("data/raw")
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
+    # download
     def download_dataset(self, dataset_name: str, columns: list = None) -> pd.DataFrame:
         logger.info(f"Downloading dataset: {dataset_name}")
         
@@ -47,6 +52,7 @@ class DataDownloader:
             logger.error(f"Failed to download {dataset_name}: {e}")
             raise
     
+    # validation
     def validate_dataset(self, df: pd.DataFrame, dataset_info: dict) -> bool:
         errors = []
         warnings = []
@@ -80,12 +86,14 @@ class DataDownloader:
         logger.info("Validation completed")
         return True
     
+    # save
     def save_dataset(self, df: pd.DataFrame, filename: str) -> Path:
         output_path = self.output_dir / filename
         df.to_parquet(output_path, index=False)
         logger.info(f"Saved {len(df)} records to {output_path}")
         return output_path
     
+    # full pipeline: download, validate, save (skips if output exists)
     def download_and_save(self, dataset_info: dict, skip_existing: bool = True) -> Path:
         output_path = self.output_dir / dataset_info["output_file"]
         

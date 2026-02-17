@@ -1,11 +1,7 @@
-"""
-CalmAI Pipeline DAG
+# main airflow dag for the calmai data pipeline
+# 13 tasks: acquisition -> preprocessing -> validation -> bias -> embedding -> mongodb -> email
+# uses branchpythonoperator for validation gate and emptyoperators for sync points
 
-acquisition → preprocessing → validation → bias analysis → embedding → storage
-
-DAG ID  : calm_ai_pipeline
-Schedule: None (manual trigger for initial load)
-"""
 from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
@@ -18,7 +14,7 @@ import time
 sys.path.insert(0, "/opt/airflow/src")
 sys.path.insert(0, "/opt/airflow/configs")
 
-logger = logging.getLogger("calm_ai_pipeline")
+logger = logging.getLogger("calm_ai_data_pipeline")
 
 default_args = {
     "owner": "calmai",
@@ -30,9 +26,8 @@ default_args = {
     "retry_delay": timedelta(minutes=1),
 }
 
-
-# ── Task Callables ─────────────────────────────────────────────
-
+# task callables
+# each one wraps a pipeline step with timing and xcom
 
 def start_callable(**context):
     import config
@@ -40,7 +35,6 @@ def start_callable(**context):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     context["ti"].xcom_push(key="run_id", value=run_id)
     logger.info(f"Pipeline started | run_id={run_id}")
-
 
 def download_conversations_callable(**context):
     t0 = time.time()
@@ -58,7 +52,6 @@ def download_conversations_callable(**context):
         logger.error(f"download_conversations failed: {e}")
         raise
 
-
 def generate_journals_callable(**context):
     t0 = time.time()
     try:
@@ -72,7 +65,6 @@ def generate_journals_callable(**context):
         logger.error(f"generate_journals failed: {e}")
         raise
 
-
 def preprocess_conversations_callable(**context):
     t0 = time.time()
     try:
@@ -85,7 +77,6 @@ def preprocess_conversations_callable(**context):
         logger.error(f"preprocess_conversations failed: {e}")
         raise
 
-
 def preprocess_journals_callable(**context):
     t0 = time.time()
     try:
@@ -97,7 +88,6 @@ def preprocess_journals_callable(**context):
     except Exception as e:
         logger.error(f"preprocess_journals failed: {e}")
         raise
-
 
 def validate_data_callable(**context):
     t0 = time.time()
@@ -132,17 +122,16 @@ def validate_data_callable(**context):
         logger.error(f"validate_data failed: {e}")
         raise
 
-
+# validation gate — routes to bias tasks on pass or halts on fail
 def validation_branch_callable(**context):
     ti = context["ti"]
     passed = ti.xcom_pull(task_ids="validate_data", key="validation_passed")
     if passed:
-        logger.info("Validation passed → bias analysis")
+        logger.info("Validation passed -> bias analysis")
         return ["bias_conversations", "bias_journals"]
 
-    logger.warning("Validation failed → stopping pipeline")
+    logger.warning("Validation failed -> stopping pipeline")
     return "validation_failed"
-
 
 def validation_failed_callable(**context):
     details = (
@@ -152,7 +141,6 @@ def validation_failed_callable(**context):
     raise AirflowFailException(
         f"Pipeline halted — validation failure: {details}"
     )
-
 
 def bias_conversations_callable(**context):
     t0 = time.time()
@@ -177,7 +165,6 @@ def bias_conversations_callable(**context):
         logger.error(f"bias_conversations failed: {e}")
         raise
 
-
 def bias_journals_callable(**context):
     t0 = time.time()
     try:
@@ -194,7 +181,6 @@ def bias_journals_callable(**context):
         logger.error(f"bias_journals failed: {e}")
         raise
 
-
 def embed_conversations_callable(**context):
     t0 = time.time()
     try:
@@ -209,7 +195,6 @@ def embed_conversations_callable(**context):
         logger.error(f"embed_conversations failed: {e}")
         raise
 
-
 def embed_journals_callable(**context):
     t0 = time.time()
     try:
@@ -222,12 +207,10 @@ def embed_journals_callable(**context):
         logger.error(f"embed_journals failed: {e}")
         raise
 
-
 def store_to_mongodb_callable(**context):
     t0 = time.time()
     try:
         from storage.mongodb_client import MongoDBClient
-
         ti = context["ti"]
         client = MongoDBClient()
         try:
@@ -275,6 +258,7 @@ def store_to_mongodb_callable(**context):
                 value={"conversations": conv_result, "journals": jour_result},
             )
             ti.xcom_push(key="collection_stats", value=stats)
+            ti.xcom_push(key="duration", value=metrics["store_to_mongodb"])
             logger.info(f"MongoDB storage complete | {stats}")
         finally:
             client.close()
@@ -282,26 +266,25 @@ def store_to_mongodb_callable(**context):
         logger.error(f"store_to_mongodb failed: {e}")
         raise
 
-
 def success_email_callable(**context):
     from alerts.success_email import send_success_email
     send_success_email(**context)
 
-
-# ── DAG Definition ─────────────────────────────────────────────
-
+# define and configure the dag
 with DAG(
-    dag_id="calm_ai_pipeline",
+    dag_id="calm_ai_data_pipeline",
     default_args=default_args,
     description=(
         "CalmAI data pipeline: acquisition, preprocessing, validation, "
-        "bias analysis, embedding, and MongoDB storage"
+        "bias analysis, embedding and MongoDB storage"
     ),
     schedule=None,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     tags=["calmai", "mental-health", "data-pipeline"],
 ) as dag:
+
+    # task definitions
 
     t_start = PythonOperator(
         task_id="start",
@@ -326,6 +309,7 @@ with DAG(
         python_callable=preprocess_journals_callable,
     )
 
+    # sync points
     t_preprocessing_complete = EmptyOperator(task_id="preprocessing_complete")
 
     t_validate = PythonOperator(
@@ -380,8 +364,7 @@ with DAG(
         trigger_rule="none_failed_min_one_success",
     )
 
-    # ── Dependencies ───────────────────────────────────────────
-
+    # dependency graph
     t_start >> [t_download_conv, t_generate_jour]
 
     t_download_conv >> t_preprocess_conv

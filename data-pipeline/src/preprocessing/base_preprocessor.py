@@ -1,6 +1,12 @@
+# shared text preprocessing for mental health content
+# important: we preserve capitalization and hesitation markers
+
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -12,14 +18,17 @@ class TextStatistics:
 
 
 class BasePreprocessor:
-    
+
+    # regex patterns for url/email/data-uri replacement and whitespace cleanup
     URL_PATTERN = re.compile(
         r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
     )
+    DATA_URI_PATTERN = re.compile(r'data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+')
     EMAIL_PATTERN = re.compile(r'[\w\.-]+@[\w\.-]+\.\w+')
     WHITESPACE_PATTERN = re.compile(r'[ \t]+')
     NEWLINE_PATTERN = re.compile(r'\n{3,}')
     
+    # curly quotes to straight quotes
     QUOTE_MAP = {
         '"': '"',
         '"': '"',
@@ -29,10 +38,13 @@ class BasePreprocessor:
         '»': '"',
     }
     
+    # individual preprocessing steps
     def normalize_unicode(self, text: str) -> str:
         return unicodedata.normalize('NFC', text)
     
     def replace_urls(self, text: str) -> str:
+        # strip base64 data uris first (they can be huge embedded images)
+        text = self.DATA_URI_PATTERN.sub('<DATA_URI>', text)
         return self.URL_PATTERN.sub('<URL>', text)
     
     def replace_emails(self, text: str) -> str:
@@ -66,14 +78,18 @@ class BasePreprocessor:
             avg_word_length=round(avg_word_length, 2)
         )
     
+    # full pipeline — runs all steps in order
     def process(self, text: str) -> str:
         if not text or not isinstance(text, str):
+            logger.debug("Skipping empty or non-string input")
             return ""
         
+        original_len = len(text)
         text = self.normalize_unicode(text)
         text = self.replace_urls(text)
         text = self.replace_emails(text)
         text = self.standardize_quotes(text)
         text = self.standardize_whitespace(text)
         
+        logger.debug("Preprocessed text: %d -> %d chars", original_len, len(text))
         return text

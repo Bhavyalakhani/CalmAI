@@ -1,0 +1,4 @@
+[core]
+    remote = gcs_remote
+['remote "gcs_remote"']
+    url = gs://calmai-dvc-storage/data-pipeline

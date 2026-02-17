@@ -1,0 +1,191 @@
+schema: '2.0'
+stages:
+  download_conversations:
+    cmd: python src/acquisition/data_downloader.py
+    deps:
+    - path: configs/config.py
+      hash: md5
+      md5: a68c1bdf488ff529a735f876d6cd3558
+      size: 1769
+    - path: src/acquisition/data_downloader.py
+      hash: md5
+      md5: 6dafc10cb5dcb3131f70967dfc8c65a2
+      size: 5251
+    outs:
+    - path: data/raw/conversations/counsel_chat.parquet
+      hash: md5
+      md5: 64603373bdd0d3fd23bfe17e3a665acf
+      size: 1720803
+    - path: data/raw/conversations/mental_health_conversations.parquet
+      hash: md5
+      md5: 40bd92a7f12d0aef3fe5131483c823c0
+      size: 2286744
+  generate_journals:
+    cmd: python src/acquisition/generate_journals.py run
+    deps:
+    - path: configs/config.py
+      hash: md5
+      md5: a68c1bdf488ff529a735f876d6cd3558
+      size: 1769
+    - path: configs/patient_profiles.yaml
+      hash: md5
+      md5: 5769c5e33ee6a929ed2e9a64b2ba9073
+      size: 2877
+    - path: src/acquisition/generate_journals.py
+      hash: md5
+      md5: 3fbbc803bbc21db29ae6a93f4cad4fca
+      size: 13287
+    outs:
+    - path: data/raw/journals/synthetic_journals.parquet
+      hash: md5
+      md5: c0f71cd39cdb48708702b9ec85c9a870
+      size: 100358
+  preprocess_conversations:
+    cmd: python -c "from src.preprocessing.conversation_preprocessor import 
+      ConversationPreprocessor; 
+      ConversationPreprocessor().run(skip_existing=False)"
+    deps:
+    - path: data/raw/conversations/counsel_chat.parquet
+      hash: md5
+      md5: 64603373bdd0d3fd23bfe17e3a665acf
+      size: 1720803
+    - path: data/raw/conversations/mental_health_conversations.parquet
+      hash: md5
+      md5: 40bd92a7f12d0aef3fe5131483c823c0
+      size: 2286744
+    - path: src/preprocessing/base_preprocessor.py
+      hash: md5
+      md5: 07c924c97721ac8e28d8dbb979e51106
+      size: 2964
+    - path: src/preprocessing/conversation_preprocessor.py
+      hash: md5
+      md5: b36bee8a7028c2723cad95343f30b644
+      size: 8538
+    outs:
+    - path: data/processed/conversations/processed_conversations.parquet
+      hash: md5
+      md5: 83ecf22a0c477a383f6c37f2ca54280f
+      size: 3753117
+  preprocess_journals:
+    cmd: python -c "from src.preprocessing.journal_preprocessor import 
+      JournalPreprocessor; JournalPreprocessor().run(skip_existing=False)"
+    deps:
+    - path: data/raw/journals/synthetic_journals.parquet
+      hash: md5
+      md5: c0f71cd39cdb48708702b9ec85c9a870
+      size: 100358
+    - path: src/preprocessing/base_preprocessor.py
+      hash: md5
+      md5: 07c924c97721ac8e28d8dbb979e51106
+      size: 2964
+    - path: src/preprocessing/journal_preprocessor.py
+      hash: md5
+      md5: 5bf6b4ef6429ddf0eab994be208029fc
+      size: 8631
+    outs:
+    - path: data/processed/journals/processed_journals.parquet
+      hash: md5
+      md5: 0a4925d2ece0b8dff4bf19a52b493854
+      size: 204797
+  validate:
+    cmd: python -c "from src.validation.schema_validator import SchemaValidator;
+      SchemaValidator().run(skip_existing=False)"
+    deps:
+    - path: data/processed/conversations/processed_conversations.parquet
+      hash: md5
+      md5: 83ecf22a0c477a383f6c37f2ca54280f
+      size: 3753117
+    - path: data/processed/journals/processed_journals.parquet
+      hash: md5
+      md5: 0a4925d2ece0b8dff4bf19a52b493854
+      size: 204797
+    - path: src/validation/schema_validator.py
+      hash: md5
+      md5: 3ad95b5dbd2f3d74da4a04236c87b97d
+      size: 20411
+    outs:
+    - path: reports/schema/conversations_schema_report.json
+      hash: md5
+      md5: 715e2cb79baabd1ea5e05dfcb1309252
+      size: 5453
+    - path: reports/schema/journals_schema_report.json
+      hash: md5
+      md5: c16d1b751a215c1fa74b9a8c9a17694d
+      size: 5739
+  bias_conversations:
+    cmd: python -c "from src.bias_detection.conversation_bias import 
+      ConversationBiasAnalyzer; 
+      ConversationBiasAnalyzer().run(skip_existing=False)"
+    deps:
+    - path: data/processed/conversations/processed_conversations.parquet
+      hash: md5
+      md5: 83ecf22a0c477a383f6c37f2ca54280f
+      size: 3753117
+    - path: src/bias_detection/conversation_bias.py
+      hash: md5
+      md5: 96afa58f4713990e39d397e5b3ce50ad
+      size: 17341
+    - path: src/bias_detection/slicer.py
+      hash: md5
+      md5: 37f2cc779803761836ab90837a2bede5
+      size: 4051
+    outs:
+    - path: reports/bias/conversation_bias_report.json
+      hash: md5
+      md5: 9af134d8d8a81d8871ecf8864daba897
+      size: 3621
+  bias_journals:
+    cmd: python -c "from src.bias_detection.journal_bias import 
+      JournalBiasAnalyzer; JournalBiasAnalyzer().run(skip_existing=False)"
+    deps:
+    - path: data/processed/journals/processed_journals.parquet
+      hash: md5
+      md5: 0a4925d2ece0b8dff4bf19a52b493854
+      size: 204797
+    - path: src/bias_detection/journal_bias.py
+      hash: md5
+      md5: d68cc13e60061f3e49c7964680239d80
+      size: 18078
+    - path: src/bias_detection/slicer.py
+      hash: md5
+      md5: 37f2cc779803761836ab90837a2bede5
+      size: 4051
+    outs:
+    - path: reports/bias/journal_bias_report.json
+      hash: md5
+      md5: 2b2a001e89d954f1b3287b973955e138
+      size: 2884
+  embed_conversations:
+    cmd: python -c "from src.embedding.embedder import embed_conversations; 
+      embed_conversations(force=True)"
+    deps:
+    - path: data/processed/conversations/processed_conversations.parquet
+      hash: md5
+      md5: 83ecf22a0c477a383f6c37f2ca54280f
+      size: 3753117
+    - path: src/embedding/embedder.py
+      hash: md5
+      md5: 6b70995544da2b373120f2a6300365e3
+      size: 11219
+    outs:
+    - path: data/processed/conversations/embedded_conversations.parquet
+      hash: md5
+      md5: 02558dbcecf0b2ee067276e1031b78e6
+      size: 10498118
+  embed_journals:
+    cmd: python -c "from src.embedding.embedder import embed_journals; 
+      embed_journals(force=True)"
+    deps:
+    - path: data/processed/journals/processed_journals.parquet
+      hash: md5
+      md5: 0a4925d2ece0b8dff4bf19a52b493854
+      size: 204797
+    - path: src/embedding/embedder.py
+      hash: md5
+      md5: 6b70995544da2b373120f2a6300365e3
+      size: 11219
+    outs:
+    - path: data/processed/journals/embedded_journals.parquet
+      hash: md5
+      md5: e95025473d244d20930d215ba10055f9
+      size: 2848752

@@ -1,3 +1,7 @@
+# generates synthetic journal entries using gemini api
+# each of the 10 patient profiles gets 100 entries spanning ~300 days
+# handles fetching, raw json parsing with fallback regex, and parquet export
+
 import time
 import json
 import logging
@@ -13,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config # pyright: ignore[reportMissingImports]
+import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -79,6 +83,7 @@ Generate the 100 entries as a JSON array now:"""
     def get_output_path(self):
         return self.settings.RAW_DATA_DIR / "journals" / "synthetic_journals.parquet"
 
+    # api call with 3 retries, 10s backoff between failures
     def fetch_patient_response(self, patient):
         start_date = patient["start_date"]
         end_date = self.get_end_date(start_date)
@@ -174,6 +179,7 @@ Generate the 100 entries as a JSON array now:"""
 
         return raw_dir
 
+    # tries json.loads first, then regex extraction, then trailing comma fix
     def parse_json_response(self, response_text):
         text = response_text.strip()
         if text.startswith("```json"):
@@ -218,9 +224,11 @@ Generate the 100 entries as a JSON array now:"""
         self.logger.error(f"Response preview: {text[:1000]}...")
         raise json.JSONDecodeError("Failed to parse JSON after multiple attempts", text, 0)
 
+    # normalizes keys (gemini sometimes uses different names) and filters empties
     def process_entries(self, parsed, patient_id, therapist_id):
         entries = []
         for idx, item in enumerate(parsed):
+            # try several possible key names since gemini isn't always consistent
             entry_num = (
                 item.get('entry_number') or
                 item.get('entryNumber') or
@@ -245,7 +253,7 @@ Generate the 100 entries as a JSON array now:"""
             )
 
             if not content:
-                self.logger.warning(f"  Entry {entry_num} has no content, skipping")
+                self.logger.warning(f"Entry {entry_num} has no content, skipping")
                 continue
 
             entries.append({

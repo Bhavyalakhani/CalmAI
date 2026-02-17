@@ -1,0 +1,85 @@
+# dvc pipeline stages mirroring the airflow dag
+# tracks data artifacts from acquisition through embedding
+# run with: dvc repro
+
+stages:
+  download_conversations:
+    cmd: python src/acquisition/data_downloader.py
+    deps:
+      - src/acquisition/data_downloader.py
+      - configs/config.py
+    outs:
+      - data/raw/conversations/mental_health_conversations.parquet
+      - data/raw/conversations/counsel_chat.parquet
+
+  generate_journals:
+    cmd: python src/acquisition/generate_journals.py run
+    deps:
+      - src/acquisition/generate_journals.py
+      - configs/config.py
+      - configs/patient_profiles.yaml
+    outs:
+      - data/raw/journals/synthetic_journals.parquet
+
+  preprocess_conversations:
+    cmd: python -c "from src.preprocessing.conversation_preprocessor import ConversationPreprocessor; ConversationPreprocessor().run(skip_existing=False)"
+    deps:
+      - src/preprocessing/conversation_preprocessor.py
+      - src/preprocessing/base_preprocessor.py
+      - data/raw/conversations/mental_health_conversations.parquet
+      - data/raw/conversations/counsel_chat.parquet
+    outs:
+      - data/processed/conversations/processed_conversations.parquet
+
+  preprocess_journals:
+    cmd: python -c "from src.preprocessing.journal_preprocessor import JournalPreprocessor; JournalPreprocessor().run(skip_existing=False)"
+    deps:
+      - src/preprocessing/journal_preprocessor.py
+      - src/preprocessing/base_preprocessor.py
+      - data/raw/journals/synthetic_journals.parquet
+    outs:
+      - data/processed/journals/processed_journals.parquet
+
+  validate:
+    cmd: python -c "from src.validation.schema_validator import SchemaValidator; SchemaValidator().run(skip_existing=False)"
+    deps:
+      - src/validation/schema_validator.py
+      - data/processed/conversations/processed_conversations.parquet
+      - data/processed/journals/processed_journals.parquet
+    outs:
+      - reports/schema/conversations_schema_report.json
+      - reports/schema/journals_schema_report.json
+
+  bias_conversations:
+    cmd: python -c "from src.bias_detection.conversation_bias import ConversationBiasAnalyzer; ConversationBiasAnalyzer().run(skip_existing=False)"
+    deps:
+      - src/bias_detection/conversation_bias.py
+      - src/bias_detection/slicer.py
+      - data/processed/conversations/processed_conversations.parquet
+    outs:
+      - reports/bias/conversation_bias_report.json
+
+  bias_journals:
+    cmd: python -c "from src.bias_detection.journal_bias import JournalBiasAnalyzer; JournalBiasAnalyzer().run(skip_existing=False)"
+    deps:
+      - src/bias_detection/journal_bias.py
+      - src/bias_detection/slicer.py
+      - data/processed/journals/processed_journals.parquet
+    outs:
+      - reports/bias/journal_bias_report.json
+
+  embed_conversations:
+    cmd: python -c "from src.embedding.embedder import embed_conversations; embed_conversations(force=True)"
+    deps:
+      - src/embedding/embedder.py
+      - data/processed/conversations/processed_conversations.parquet
+    outs:
+      - data/processed/conversations/embedded_conversations.parquet
+
+  embed_journals:
+    cmd: python -c "from src.embedding.embedder import embed_journals; embed_journals(force=True)"
+    deps:
+      - src/embedding/embedder.py
+      - data/processed/journals/processed_journals.parquet
+    outs:
+      - data/processed/journals/embedded_journals.parquet

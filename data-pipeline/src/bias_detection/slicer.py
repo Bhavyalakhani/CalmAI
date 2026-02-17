@@ -1,3 +1,6 @@
+# generic dataframe slicing utilities for bias analysis
+# used by both conversation and journal bias analyzers
+
 from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass
 
@@ -19,6 +22,8 @@ class DataSlicer:
         self.df = df
         self.total_count = len(df)
     
+    # slice by column value, keyword matches, or numeric bins
+
     def slice_by_category(self, column: str) -> Dict[str, pd.DataFrame]:
         if column not in self.df.columns:
             return {}
@@ -37,13 +42,13 @@ class DataSlicer:
         if labels is None:
             labels = [f"{bins[i]}-{bins[i+1]}" for i in range(len(bins)-1)]
         
-        self.df["_bin"] = pd.cut(self.df[column], bins=bins, labels=labels, include_lowest=True)
+        temp = self.df.copy()
+        temp["_bin"] = pd.cut(temp[column], bins=bins, labels=labels, include_lowest=True)
         
         slices = {}
         for label in labels:
-            slices[label] = self.df[self.df["_bin"] == label].drop(columns=["_bin"])
+            slices[label] = temp[temp["_bin"] == label].drop(columns=["_bin"])
         
-        self.df = self.df.drop(columns=["_bin"])
         return slices
     
     def slice_by_keywords(self, column: str, keywords: List[str], 
@@ -52,8 +57,6 @@ class DataSlicer:
             return pd.DataFrame()
         
         pattern = "|".join(keywords)
-        flags = 0 if case_sensitive else pd.Series.str.contains.__code__.co_varnames
-        
         mask = self.df[column].str.contains(pattern, case=case_sensitive, na=False)
         return self.df[mask]
     
@@ -65,6 +68,8 @@ class DataSlicer:
             slices[group_name] = self.slice_by_keywords(column, keywords, case_sensitive)
         return slices
     
+    # compute count, percentage, and optional numeric stats per slice
+
     def compute_slice_stats(self, slice_df: pd.DataFrame, slice_name: str,
                            numeric_columns: Optional[List[str]] = None) -> SliceStats:
         count = len(slice_df)
@@ -73,10 +78,12 @@ class DataSlicer:
         numeric_stats = {}
         if numeric_columns:
             for col in numeric_columns:
-                if col in slice_df.columns:
+                if col in slice_df.columns and len(slice_df) > 0:
                     numeric_stats[f"{col}_mean"] = float(slice_df[col].mean())
                     numeric_stats[f"{col}_std"] = float(slice_df[col].std())
                     numeric_stats[f"{col}_median"] = float(slice_df[col].median())
+                    numeric_stats[f"{col}_min"] = float(slice_df[col].min())
+                    numeric_stats[f"{col}_max"] = float(slice_df[col].max())
         
         return SliceStats(
             name=slice_name,
@@ -92,6 +99,8 @@ class DataSlicer:
             stats.append(self.compute_slice_stats(slice_df, name, numeric_columns))
         return stats
     
+    # apply an arbitrary boolean filter
+
     def apply_filter(self, condition: Callable[[pd.DataFrame], pd.Series]) -> pd.DataFrame:
         mask = condition(self.df)
         return self.df[mask]

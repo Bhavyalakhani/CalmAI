@@ -1,3 +1,7 @@
+# mongodb client for storing embedded data
+# handles batch inserts (500 at a time), index creation,
+# parquet loading, and pipeline metadata logging
+
 import argparse
 import logging
 from pathlib import Path
@@ -11,14 +15,18 @@ from pymongo.errors import BulkWriteError
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
-import config  # pyright: ignore[reportMissingImports]
+import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
 
-COLLECTION_NAMES = ["rag_vectors", "conversations", "journals", "pipeline_metadata"]
+# all collections the pipeline writes to
+COLLECTION_NAMES = [
+    "rag_vectors", "conversations", "journals", "pipeline_metadata",
+    "incoming_journals", "patient_analytics",
+]
 
 
 class MongoDBClient:
@@ -29,6 +37,8 @@ class MongoDBClient:
         self.database_name = database if database is not None else self.settings.MONGODB_DATABASE
         self.client = None
         self.db = None
+
+    # connection lifecycle
 
     def connect(self) -> Database:
         if self.db is not None:
@@ -51,6 +61,8 @@ class MongoDBClient:
             self.db = None
             logger.info("MongoDB connection closed")
 
+    # collection accessors
+
     def get_collection(self, name: str) -> Collection:
         self.connect()
         return self.db[name]
@@ -70,6 +82,16 @@ class MongoDBClient:
     @property
     def pipeline_metadata(self) -> Collection:
         return self.get_collection("pipeline_metadata")
+
+    @property
+    def incoming_journals(self) -> Collection:
+        return self.get_collection("incoming_journals")
+
+    @property
+    def patient_analytics(self) -> Collection:
+        return self.get_collection("patient_analytics")
+
+    # index management
 
     def create_indexes(self):
         self.connect()
@@ -93,6 +115,16 @@ class MongoDBClient:
             IndexModel([("therapist_id", ASCENDING)]),
         ])
 
+        self.incoming_journals.create_indexes([
+            IndexModel([("journal_id", ASCENDING)], unique=True),
+            IndexModel([("patient_id", ASCENDING)]),
+            IndexModel([("is_processed", ASCENDING)]),
+        ])
+
+        self.patient_analytics.create_indexes([
+            IndexModel([("patient_id", ASCENDING)], unique=True),
+        ])
+
         logger.info("Indexes created successfully")
 
     def drop_collections(self):
@@ -104,6 +136,8 @@ class MongoDBClient:
             logger.info(f"Dropped collection: {name}")
 
         logger.info("All collections dropped")
+
+    # batch insert with bulkwriteerror handling
 
     def _batch_insert(self, collection: Collection, documents: List[Dict[str, Any]]) -> int:
         if not documents:
@@ -121,6 +155,8 @@ class MongoDBClient:
 
         return total_inserted
 
+    # insert conversations (writes to both rag_vectors and conversations collections)
+
     def insert_conversations(self, df: pd.DataFrame) -> Dict[str, int]:
         self.connect()
 
@@ -128,6 +164,14 @@ class MongoDBClient:
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
+
+        # clear old conversation vectors to prevent duplicates across pipeline runs
+        deleted = self.rag_vectors.delete_many({"doc_type": "conversation"})
+        logger.info(f"Cleared {deleted.deleted_count} existing conversation vectors from rag_vectors")
+
+        # clear old raw conversations too
+        deleted_raw = self.conversations.delete_many({})
+        logger.info(f"Cleared {deleted_raw.deleted_count} existing raw conversations")
 
         vector_docs = []
         raw_docs = []
@@ -159,8 +203,12 @@ class MongoDBClient:
                 "source_file": r.get("source_file", ""),
                 "context_word_count": r.get("context_word_count", 0),
                 "context_char_count": r.get("context_char_count", 0),
+                "context_sentence_count": r.get("context_sentence_count", 0),
+                "context_avg_word_length": r.get("context_avg_word_length", 0.0),
                 "response_word_count": r.get("response_word_count", 0),
                 "response_char_count": r.get("response_char_count", 0),
+                "response_sentence_count": r.get("response_sentence_count", 0),
+                "response_avg_word_length": r.get("response_avg_word_length", 0.0),
                 "embedding_text": r.get("embedding_text", ""),
                 "is_embedded": True,
             })
@@ -172,7 +220,139 @@ class MongoDBClient:
         logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw conversation docs")
         return {"rag_vectors": vec_count, "conversations": raw_count}
 
+    # insert journals (writes to both rag_vectors and journals collections)
+
     def insert_journals(self, df: pd.DataFrame) -> Dict[str, int]:
+        self.connect()
+
+        required = ["journal_id", "patient_id", "embedding", "content"]
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns: {missing}")
+
+        # clear old journal vectors to prevent duplicates across pipeline runs
+        deleted = self.rag_vectors.delete_many({"doc_type": "journal"})
+        logger.info(f"Cleared {deleted.deleted_count} existing journal vectors from rag_vectors")
+
+        # clear old raw journals too
+        deleted_raw = self.journals.delete_many({})
+        logger.info(f"Cleared {deleted_raw.deleted_count} existing raw journals")
+
+        vector_docs = []
+        raw_docs = []
+
+        for _, row in df.iterrows():
+            r = row.to_dict()
+
+            entry_date = r.get("entry_date")
+            if pd.notna(entry_date):
+                entry_date = pd.Timestamp(entry_date).isoformat()
+            else:
+                entry_date = None
+
+            embedding = r["embedding"]
+            if hasattr(embedding, "tolist"):
+                embedding = embedding.tolist()
+
+            vector_docs.append({
+                "doc_type": "journal",
+                "journal_id": r["journal_id"],
+                "patient_id": r["patient_id"],
+                "therapist_id": r.get("therapist_id"),
+                "content": r.get("embedding_text", r["content"]),
+                "embedding": embedding,
+                "metadata": {
+                    "journal_id": r["journal_id"],
+                    "patient_id": r["patient_id"],
+                    "therapist_id": r.get("therapist_id"),
+                    "entry_date": entry_date,
+                },
+            })
+
+            raw_docs.append({
+                "journal_id": r["journal_id"],
+                "patient_id": r["patient_id"],
+                "therapist_id": r.get("therapist_id"),
+                "content": r["content"],
+                "entry_date": entry_date,
+                "word_count": r.get("word_count", 0),
+                "char_count": r.get("char_count", 0),
+                "sentence_count": r.get("sentence_count", 0),
+                "avg_word_length": r.get("avg_word_length", 0.0),
+                "day_of_week": r.get("day_of_week"),
+                "week_number": r.get("week_number"),
+                "month": r.get("month"),
+                "year": r.get("year"),
+                "days_since_last": r.get("days_since_last", 0),
+                "embedding_text": r.get("embedding_text", ""),
+                "is_embedded": True,
+            })
+
+        logger.info(f"Inserting {len(df)} journals into MongoDB...")
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        raw_count = self._batch_insert(self.journals, raw_docs)
+
+        logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw journal docs")
+        return {"rag_vectors": vec_count, "journals": raw_count}
+
+    # parquet loaders — convenience methods that read parquet then insert
+
+    def store_conversations_from_parquet(self, path: Optional[Path] = None) -> Dict[str, int]:
+        settings = config.settings
+        if path is None:
+            path = settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+
+        if not path.exists():
+            raise FileNotFoundError(f"Embedded conversations not found: {path}")
+
+        df = pd.read_parquet(path)
+        logger.info(f"Loaded {len(df)} embedded conversations from {path}")
+        return self.insert_conversations(df)
+
+    def store_journals_from_parquet(self, path: Optional[Path] = None) -> Dict[str, int]:
+        settings = config.settings
+        if path is None:
+            path = settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+
+        if not path.exists():
+            raise FileNotFoundError(f"Embedded journals not found: {path}")
+
+        df = pd.read_parquet(path)
+        logger.info(f"Loaded {len(df)} embedded journals from {path}")
+        return self.insert_journals(df)
+
+    def store_incoming_journals_from_parquet(self, path: Path) -> Dict[str, int]:
+        if not path.exists():
+            raise FileNotFoundError(f"Incoming journal embeddings not found: {path}")
+
+        df = pd.read_parquet(path)
+        logger.info(f"Loaded {len(df)} incoming journal embeddings from {path}")
+        return self.insert_journals(df)
+
+    # incoming journal staging — backend writes here, dag 2 reads from here
+
+    def fetch_unprocessed_journals(self) -> List[Dict[str, Any]]:
+        """fetch all journals from incoming_journals where is_processed is false"""
+        self.connect()
+        cursor = self.incoming_journals.find({"is_processed": False})
+        docs = list(cursor)
+        logger.info(f"Fetched {len(docs)} unprocessed incoming journals")
+        return docs
+
+    def mark_journals_processed(self, journal_ids: List[str]):
+        """mark a batch of incoming journals as processed"""
+        self.connect()
+        if not journal_ids:
+            return
+
+        result = self.incoming_journals.update_many(
+            {"journal_id": {"$in": journal_ids}},
+            {"$set": {"is_processed": True}},
+        )
+        logger.info(f"Marked {result.modified_count} journals as processed")
+
+    def insert_incoming_journals(self, df: pd.DataFrame) -> Dict[str, int]:
+        """append incoming journals to rag_vectors and journals (no clear)"""
         self.connect()
 
         required = ["journal_id", "patient_id", "embedding", "content"]
@@ -220,6 +400,7 @@ class MongoDBClient:
                 "word_count": r.get("word_count", 0),
                 "char_count": r.get("char_count", 0),
                 "sentence_count": r.get("sentence_count", 0),
+                "avg_word_length": r.get("avg_word_length", 0.0),
                 "day_of_week": r.get("day_of_week"),
                 "week_number": r.get("week_number"),
                 "month": r.get("month"),
@@ -229,44 +410,29 @@ class MongoDBClient:
                 "is_embedded": True,
             })
 
-        logger.info(f"Inserting {len(df)} journals into MongoDB...")
+        logger.info(f"Appending {len(df)} incoming journals to MongoDB...")
         vec_count = self._batch_insert(self.rag_vectors, vector_docs)
         raw_count = self._batch_insert(self.journals, raw_docs)
 
-        logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw journal docs")
+        logger.info(f"Appended {vec_count} vector docs, {raw_count} raw journal docs")
         return {"rag_vectors": vec_count, "journals": raw_count}
 
-    def store_conversations_from_parquet(self, path: Optional[Path] = None) -> Dict[str, int]:
-        settings = config.settings
-        if path is None:
-            path = settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+    def upsert_patient_analytics(self, patient_id: str, analytics: Dict[str, Any]):
+        """upsert analytics data for a patient (topic dist, mood trends, etc.)"""
+        self.connect()
+        from datetime import datetime, timezone
 
-        if not path.exists():
-            raise FileNotFoundError(f"Embedded conversations not found: {path}")
+        analytics["patient_id"] = patient_id
+        analytics["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        df = pd.read_parquet(path)
-        logger.info(f"Loaded {len(df)} embedded conversations from {path}")
-        return self.insert_conversations(df)
+        self.patient_analytics.update_one(
+            {"patient_id": patient_id},
+            {"$set": analytics},
+            upsert=True,
+        )
+        logger.info(f"Upserted analytics for patient {patient_id}")
 
-    def store_journals_from_parquet(self, path: Optional[Path] = None) -> Dict[str, int]:
-        settings = config.settings
-        if path is None:
-            path = settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
-
-        if not path.exists():
-            raise FileNotFoundError(f"Embedded journals not found: {path}")
-
-        df = pd.read_parquet(path)
-        logger.info(f"Loaded {len(df)} embedded journals from {path}")
-        return self.insert_journals(df)
-
-    def store_incoming_journals_from_parquet(self, path: Path) -> Dict[str, int]:
-        if not path.exists():
-            raise FileNotFoundError(f"Incoming journal embeddings not found: {path}")
-
-        df = pd.read_parquet(path)
-        logger.info(f"Loaded {len(df)} incoming journal embeddings from {path}")
-        return self.insert_journals(df)
+    # pipeline metadata and stats
 
     def log_pipeline_run(self, run_data: Dict[str, Any]):
         self.connect()
@@ -280,8 +446,12 @@ class MongoDBClient:
             "conversations": self.conversations.count_documents({}),
             "journals": self.journals.count_documents({}),
             "pipeline_metadata": self.pipeline_metadata.count_documents({}),
+            "incoming_journals": self.incoming_journals.count_documents({}),
+            "patient_analytics": self.patient_analytics.count_documents({}),
         }
 
+
+# cli for manual index/collection management
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mongodb_client")

@@ -1,153 +1,202 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# tests for conversation_preprocessor.py
+# covers column standardization, id generation, deduplication, text preprocessing,
+# embedding text creation, validation filtering, load, and save
 
 import pytest
 from unittest.mock import Mock, patch
 import pandas as pd
+from pathlib import Path
+
 from preprocessing.conversation_preprocessor import ConversationPreprocessor
 
 
 @pytest.fixture
-def preprocessor():
+def preprocessor(mock_settings):
     prep = ConversationPreprocessor()
-    prep.settings = Mock()
-    prep.settings.RAW_DATA_DIR = Path("/tmp/raw")
-    prep.settings.PROCESSED_DATA_DIR = Path("/tmp/processed")
-    prep.settings.ensure_directories = Mock()
+    prep.settings = mock_settings
     return prep
 
 
-@pytest.fixture
-def sample_conversation_df():
-    return pd.DataFrame({
-        'Context': ['I feel anxious about work', 'Help with depression'],
-        'Response': ['Here is some advice', 'I understand your feelings'],
-        'QuestionTitle': ['Anxiety', 'Depression']
-    })
+# column standardization
+class TestStandardizeColumns:
+
+    def test_lowercases_column_names(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "Context": ["Q1", "Q2"],
+            "Response": ["A1", "A2"],
+            "QuestionTitle": ["T1", "T2"],
+        })
+        result = preprocessor.standardize_columns()
+
+        assert "context" in result.columns
+        assert "response" in result.columns
+        assert "Context" not in result.columns
+
+    def test_remaps_counsel_chat_columns(self, preprocessor):
+        # the counsel-chat dataset uses questiontext/answertext instead of context/response
+        preprocessor.df = pd.DataFrame({
+            "questiontext": ["Q1"], "questiontitle": ["T1"], "answertext": ["A1"],
+        })
+        result = preprocessor.standardize_columns()
+
+        assert "context" in result.columns
+        assert "response" in result.columns
+        assert "context_title" in result.columns
 
 
-class TestConversationPreprocessor:
-    
-    def test_standardize_columns(self, preprocessor, sample_conversation_df):
-        preprocessor.df = sample_conversation_df.copy()
-        result = preprocessor.standardize_columns()
-        
-        assert 'context' in result.columns
-        assert 'response' in result.columns
-        assert 'Context' not in result.columns
-    
-    def test_standardize_columns_with_questiontext(self, preprocessor):
-        df = pd.DataFrame({
-            'questiontext': ['Question 1', 'Question 2'],
-            'questiontitle': ['Title 1', 'Title 2'],
-            'answertext': ['Answer 1', 'Answer 2']
+# id generation and deduplication
+class TestGenerateIds:
+
+    def test_assigns_unique_ids(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["Q1", "Q2"],
+            "response": ["A1", "A2"],
         })
-        preprocessor.df = df
-        result = preprocessor.standardize_columns()
-        
-        assert 'context' in result.columns
-        assert 'response' in result.columns
-        assert 'context_title' in result.columns
-    
-    def test_generate_ids(self, preprocessor):
-        df = pd.DataFrame({
-            'context': ['Question 1', 'Question 2', 'Question 1'],
-            'response': ['Answer 1', 'Answer 2', 'Answer 1']
-        })
-        preprocessor.df = df
         result = preprocessor.generate_ids()
-        
-        assert 'conversation_id' in result.columns
-        assert len(result) == 2  # Duplicate removed
-        assert len(result['conversation_id'].unique()) == 2
-    
-    def test_apply_preprocessing(self, preprocessor):
-        df = pd.DataFrame({
-            'context': ['  Hello world  ', 'Test message'],
-            'response': ['Response one', 'Response two']
+
+        assert "conversation_id" in result.columns
+        assert len(result["conversation_id"].unique()) == 2
+
+    def test_removes_duplicates(self, preprocessor):
+        # same context+response → same md5 hash → gets deduped
+        preprocessor.df = pd.DataFrame({
+            "context": ["Q1", "Q2", "Q1"],
+            "response": ["A1", "A2", "A1"],
         })
-        preprocessor.df = df
-        preprocessor.preprocessor = Mock()
-        preprocessor.preprocessor.process = lambda x: x.strip().lower()
-        
-        # Mock compute_statistics to return objects with attributes
-        mock_stats = Mock()
-        mock_stats.word_count = 2
-        mock_stats.char_count = 10
-        preprocessor.preprocessor.compute_statistics = Mock(return_value=mock_stats)
-        
+        result = preprocessor.generate_ids()
+        assert len(result) == 2
+
+    def test_keeps_different_responses_to_same_question(self, preprocessor):
+        # counsel-chat has multiple answers per question — all should survive dedup
+        preprocessor.df = pd.DataFrame({
+            "context": ["Same question", "Same question", "Same question"],
+            "response": ["Answer one", "Answer two", "Answer three"],
+        })
+        result = preprocessor.generate_ids()
+        assert len(result) == 3
+
+
+# text preprocessing
+class TestApplyPreprocessing:
+
+    def test_adds_all_stat_columns(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["Hello world today", "Test message here"],
+            "response": ["Response one here", "Response two here"],
+        })
+        # use real BasePreprocessor instead of a mock — simpler and more realistic
         result = preprocessor.apply_preprocessing()
-        
-        assert 'context_word_count' in result.columns
-        assert 'context_char_count' in result.columns
-        assert 'response_word_count' in result.columns
-    
-    def test_create_embedding_text(self, preprocessor):
-        df = pd.DataFrame({
-            'context': ['I need help', 'Feeling sad'],
-            'response': ['I can help you', 'That must be hard']
+
+        expected_cols = [
+            "context_word_count", "context_char_count", "context_sentence_count",
+            "context_avg_word_length", "response_word_count", "response_char_count",
+            "response_sentence_count", "response_avg_word_length", "is_embedded",
+        ]
+        for col in expected_cols:
+            assert col in result.columns
+
+    def test_sets_is_embedded_to_false(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["Hello"], "response": ["World"],
         })
-        preprocessor.df = df
+        result = preprocessor.apply_preprocessing()
+        assert result["is_embedded"].iloc[0] == False
+
+    def test_strips_base64_data_uris(self, preprocessor):
+        # real world case: some responses have embedded base64 images
+        preprocessor.df = pd.DataFrame({
+            "context": ["What helps with panic?"],
+            "response": ['Try this: <img src="data:image/png;base64,iVBORw0KGgoAAAA" /> it works'],
+        })
+        result = preprocessor.apply_preprocessing()
+
+        assert "base64" not in result["response"].iloc[0]
+        assert "<DATA_URI>" in result["response"].iloc[0]
+        # avg word length should be reasonable now
+        assert result["response_avg_word_length"].iloc[0] < 30
+
+    def test_handles_null_text(self, preprocessor):
+        # edge case: null values in context/response should become empty strings, not crash
+        preprocessor.df = pd.DataFrame({
+            "context": [None, "Valid"], "response": ["Valid", None],
+        })
+        result = preprocessor.apply_preprocessing()
+        assert len(result) == 2
+
+
+# embedding text
+class TestEmbeddingText:
+
+    def test_creates_formatted_embedding_text(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["I need help"], "response": ["I can help you"],
+        })
         result = preprocessor.create_embedding_text()
-        
-        assert 'embedding_text' in result.columns
-        assert 'User concern:' in result['embedding_text'].iloc[0]
-        assert 'Counselor response:' in result['embedding_text'].iloc[0]
-    
-    def test_validate_filters_invalid(self, preprocessor):
-        df = pd.DataFrame({
-            'context': ['Good question here', '', 'Hi there'],
-            'response': ['Good answer here', 'Short answer', ''],
-            'context_word_count': [3, 0, 2],
-            'response_word_count': [3, 2, 0]
+
+        assert "embedding_text" in result.columns
+        assert "User concern:" in result["embedding_text"].iloc[0]
+        assert "Counselor response:" in result["embedding_text"].iloc[0]
+
+
+# validation
+class TestValidation:
+
+    def test_filters_out_empty_fields(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["Good question here", "", "Hi there"],
+            "response": ["Good answer here", "Short answer", ""],
+            "context_word_count": [3, 0, 2],
+            "response_word_count": [3, 2, 0],
+            "embedding_text": [
+                "User concern: Good\n\nCounselor response: Good",
+                "",
+                "",
+            ],
         })
-        preprocessor.df = df
         preprocessor.validate()
-        
-        # Only first row meets all criteria (>= 3 words in both)
+
+        # only first row has >= 3 words in both + non-empty embedding
         assert len(preprocessor.df) == 1
-        assert preprocessor.df['context'].iloc[0] == 'Good question here'
-    
-    def test_validate_all_valid(self, preprocessor):
-        df = pd.DataFrame({
-            'context': ['Good question', 'Another question'],
-            'response': ['Good answer', 'Another answer'],
-            'context_word_count': [5, 6],
-            'response_word_count': [5, 6]
+        assert preprocessor.df["context"].iloc[0] == "Good question here"
+
+    def test_keeps_all_valid_rows(self, preprocessor):
+        preprocessor.df = pd.DataFrame({
+            "context": ["Good question", "Another question"],
+            "response": ["Good answer", "Another answer"],
+            "context_word_count": [5, 6],
+            "response_word_count": [5, 6],
+            "embedding_text": ["emb1", "emb2"],
         })
-        preprocessor.df = df
         result = preprocessor.validate()
-        
+
         assert result is True
         assert len(preprocessor.df) == 2
-    
-    @patch('preprocessing.conversation_preprocessor.pd.read_parquet')
-    def test_load_data(self, mock_read_parquet, preprocessor, tmp_path, sample_conversation_df):
-        input_dir = tmp_path / "conversations"
-        input_dir.mkdir()
-        
-        # Create mock parquet files
-        file1 = input_dir / "file1.parquet"
-        file2 = input_dir / "file2.parquet"
-        file1.touch()
-        file2.touch()
-        
-        preprocessor.settings.RAW_DATA_DIR = tmp_path
-        mock_read_parquet.return_value = sample_conversation_df
-        
+
+
+# load and save
+class TestLoadAndSave:
+
+    @patch("preprocessing.conversation_preprocessor.pd.read_parquet")
+    def test_loads_and_concatenates_parquet_files(self, mock_read, preprocessor, tmp_path):
+        input_dir = tmp_path / "raw" / "conversations"
+        input_dir.mkdir(parents=True)
+        (input_dir / "f1.parquet").touch()
+        (input_dir / "f2.parquet").touch()
+
+        preprocessor.settings.RAW_DATA_DIR = tmp_path / "raw"
+        mock_read.return_value = pd.DataFrame({"Context": ["Q1"], "Response": ["A1"]})
+
         result = preprocessor.load_data()
-        
-        assert len(result) == 4  # 2 files × 2 rows
-        assert 'source_file' in result.columns
-    
-    def test_save(self, preprocessor, tmp_path):
-        df = pd.DataFrame({'a': [1, 2], 'b': [3, 4]})
-        preprocessor.df = df
+
+        assert len(result) == 2  # 2 files × 1 row each
+        assert "source_file" in result.columns
+
+    def test_saves_parquet_to_output_dir(self, preprocessor, tmp_path):
+        preprocessor.df = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
         preprocessor.settings.PROCESSED_DATA_DIR = tmp_path
-        
-        output_path = preprocessor.save()
-        
-        assert output_path.exists()
-        loaded = pd.read_parquet(output_path)
+
+        path = preprocessor.save()
+
+        assert path.exists()
+        loaded = pd.read_parquet(path)
         assert len(loaded) == 2

@@ -143,6 +143,11 @@ celerybeat.pid
 env/
 venv/
 ENV/
+
+# GCS service account keys
+calm-ai-dvc-key.json
+gcs-key*.json
+*-credentials.json
 env.bak/
 venv.bak/
 
