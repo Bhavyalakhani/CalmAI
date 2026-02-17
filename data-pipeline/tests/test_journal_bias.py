@@ -195,3 +195,19 @@ class TestVisualizations:
         for p in paths:
             assert p.exists()
             assert p.suffix == ".png"
+
+
+# theme overlap (NEW)
+class TestThemeOverlap:
+
+    def test_overlap_structure(self, analyzer_with_data):
+        overlap = analyzer_with_data.analyze_theme_overlap()
+        assert "multi_theme_count" in overlap
+        assert "no_theme_count" in overlap
+        assert "top_co_occurrences" in overlap
+
+    def test_multi_theme_when_content_matches_several(self, analyzer):
+        analyzer.df = pd.DataFrame({"content": ["I feel anxious and depressed about work"]})
+        analyzer.classify_themes()
+        overlap = analyzer.analyze_theme_overlap()
+        assert overlap["multi_theme_count"] == 1

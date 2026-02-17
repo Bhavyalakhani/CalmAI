@@ -18,7 +18,7 @@ from embedding.embedder import (
     _preprocess_journal_df,
     JOURNAL_EMBEDDING_SCHEMA,
 )
-from tests.conftest import make_fake_model, FAKE_DIM
+from conftest import make_fake_model, FAKE_DIM
 
 
 # EmbeddingService
