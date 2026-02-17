@@ -209,3 +209,19 @@ marimo/_lsp/
 __marimo__/
 .*
 !.env.example
+!.dvc
+!.dvcignore
+
+# DVC cache
+.dvc/cache
+.dvc/tmp
+
+# data pipeline artifacts (tracked by DVC, not git)
+data-pipeline/data/raw/conversations/*.parquet
+data-pipeline/data/raw/journals/*.parquet
+data-pipeline/data/raw/journals/raw_responses/*.json
+data-pipeline/data/processed/**/*.parquet
+data-pipeline/data/embeddings/**/*.parquet
+data-pipeline/reports/bias/*.json
+data-pipeline/reports/bias/*.png
+data-pipeline/reports/schema/*.json
