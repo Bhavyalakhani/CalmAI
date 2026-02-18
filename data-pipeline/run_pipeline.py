@@ -195,7 +195,7 @@ def run():
 
     def dvc_version():
         try:
-            dvc_root = str(settings.PROJECT_ROOT)
+            dvc_root = str(settings.PROJECT_ROOT.parent)
 
             # commit current artifact state to dvc.lock
             # (artifacts are already declared as outputs in dvc.yaml)

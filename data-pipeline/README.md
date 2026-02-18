@@ -314,8 +314,6 @@ data-pipeline/
 │   ├── schema/                      # Schema validation JSON reports
 │   └── validation/                  # Reserved for future validation reports
 │
-├── dvc.yaml                         # DVC pipeline stages (9 stages)
-├── dvc.lock                         # DVC artifact hashes
 ├── docker-compose.yaml              # Full Airflow cluster definition
 ├── Dockerfile                       # Custom Airflow image
 ├── requirements.txt                 # Python dependencies
@@ -451,20 +449,22 @@ The `store_to_mongodb` task aggregates all task durations into the `pipeline_met
 
 DVC (Data Version Control) tracks all data artifacts so the pipeline is fully reproducible. Artifacts are stored in a Google Cloud Storage bucket.
 
+> **Note:** DVC files (`dvc.yaml`, `dvc.lock`, `.dvc/config`, `.dvcignore`) live in the **project root** (`CalmAI/`), not inside `data-pipeline/`. Each stage in `dvc.yaml` uses `wdir: data-pipeline` so all relative paths resolve correctly.
+
 ### Setup
 
 ```bash
 # DVC is included in requirements.txt, already installed
-# Initialize (already done)
+# Initialize (already done — .dvc/ is at project root)
 dvc init
 
-# Configure remote (already configured)
+# Configure remote (already configured in .dvc/config)
 dvc remote add -d gcs_remote gs://calmai-dvc-storage/data-pipeline
 ```
 
 ### Pipeline Stages
 
-The `dvc.yaml` file mirrors the Airflow DAG with 9 stages:
+The `dvc.yaml` (at project root) mirrors the Airflow DAG with 9 stages:
 
 | Stage | Outputs |
 |---|---|

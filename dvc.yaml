@@ -4,6 +4,7 @@
 
 stages:
   download_conversations:
+    wdir: data-pipeline
     cmd: python src/acquisition/data_downloader.py
     deps:
       - src/acquisition/data_downloader.py
@@ -13,6 +14,7 @@ stages:
       - data/raw/conversations/counsel_chat.parquet
 
   generate_journals:
+    wdir: data-pipeline
     cmd: python src/acquisition/generate_journals.py run
     deps:
       - src/acquisition/generate_journals.py
@@ -22,6 +24,7 @@ stages:
       - data/raw/journals/synthetic_journals.parquet
 
   preprocess_conversations:
+    wdir: data-pipeline
     cmd: python -c "from src.preprocessing.conversation_preprocessor import ConversationPreprocessor; ConversationPreprocessor().run(skip_existing=False)"
     deps:
       - src/preprocessing/conversation_preprocessor.py
@@ -32,6 +35,7 @@ stages:
       - data/processed/conversations/processed_conversations.parquet
 
   preprocess_journals:
+    wdir: data-pipeline
     cmd: python -c "from src.preprocessing.journal_preprocessor import JournalPreprocessor; JournalPreprocessor().run(skip_existing=False)"
     deps:
       - src/preprocessing/journal_preprocessor.py
@@ -41,6 +45,7 @@ stages:
       - data/processed/journals/processed_journals.parquet
 
   validate:
+    wdir: data-pipeline
     cmd: python -c "from src.validation.schema_validator import SchemaValidator; SchemaValidator().run(skip_existing=False)"
     deps:
       - src/validation/schema_validator.py
@@ -51,6 +56,7 @@ stages:
       - reports/schema/journals_schema_report.json
 
   bias_conversations:
+    wdir: data-pipeline
     cmd: python -c "from src.bias_detection.conversation_bias import ConversationBiasAnalyzer; ConversationBiasAnalyzer().run(skip_existing=False)"
     deps:
       - src/bias_detection/conversation_bias.py
@@ -60,6 +66,7 @@ stages:
       - reports/bias/conversation_bias_report.json
 
   bias_journals:
+    wdir: data-pipeline
     cmd: python -c "from src.bias_detection.journal_bias import JournalBiasAnalyzer; JournalBiasAnalyzer().run(skip_existing=False)"
     deps:
       - src/bias_detection/journal_bias.py
@@ -69,6 +76,7 @@ stages:
       - reports/bias/journal_bias_report.json
 
   embed_conversations:
+    wdir: data-pipeline
     cmd: python -c "from src.embedding.embedder import embed_conversations; embed_conversations(force=True)"
     deps:
       - src/embedding/embedder.py
@@ -77,6 +85,7 @@ stages:
       - data/processed/conversations/embedded_conversations.parquet
 
   embed_journals:
+    wdir: data-pipeline
     cmd: python -c "from src.embedding.embedder import embed_journals; embed_journals(force=True)"
     deps:
       - src/embedding/embedder.py
