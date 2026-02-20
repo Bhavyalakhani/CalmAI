@@ -1,5 +1,6 @@
 # dag 2 — incoming journal micro-batch pipeline
-# fetches unprocessed journals from mongodb, validates, embeds, stores, updates analytics
+# fetches unprocessed journals from mongodb, preprocesses, validates, embeds,
+# stores, updates analytics and sends email notifications on success/failure
 # schedule: every 30 minutes | short-circuits if no new entries
 
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,10 @@ default_args = {
 def fetch_new_entries_callable(**context):
     """fetch unprocessed journals from incoming_journals collection.
     short-circuits (returns false) if no new entries."""
+    import time
     from storage.mongodb_client import MongoDBClient
+    t0 = time.time()
+    ti = context["ti"]
     client = MongoDBClient()
     try:
         client.connect()
@@ -39,20 +43,48 @@ def fetch_new_entries_callable(**context):
 
         if not docs:
             logger.info("No unprocessed journals found — short-circuiting")
+            ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
             return False
 
         # convert objectid to string for xcom serialization
         serializable = []
         for doc in docs:
-            doc["_id"] = str(doc["_id"])
+            doc["_id"] = str(doc.get("_id", ""))
             serializable.append(doc)
 
-        context["ti"].xcom_push(key="incoming_journals", value=serializable)
-        context["ti"].xcom_push(key="journal_count", value=len(serializable))
+        ti.xcom_push(key="incoming_journals", value=serializable)
+        ti.xcom_push(key="journal_count", value=len(serializable))
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(f"Fetched {len(serializable)} unprocessed journals")
         return True
     finally:
         client.close()
+
+
+def preprocess_entries_callable(**context):
+    """preprocess incoming journal dicts using JournalPreprocessor methods.
+    operates in-memory (no file i/o) and pushes `preprocessed_journals` to xcom."""
+    t0 = time.time()
+    ti = context["ti"]
+    journals = ti.xcom_pull(task_ids="fetch_new_entries", key="incoming_journals")
+
+    if not journals:
+        logger.warning("No journals to preprocess")
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+        return
+
+    from preprocessing.journal_preprocessor import process_incoming_journals
+
+    try:
+        records = process_incoming_journals(journals)
+    except Exception as e:
+        logger.error(f"Preprocessing failed: {e}")
+        raise
+
+    ti.xcom_push(key="preprocessed_journals", value=records)
+    ti.xcom_push(key="preprocessed_count", value=len(records))
+    ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+    logger.info(f"Preprocessed {len(records)} incoming journals")
 
 
 def validate_entries_callable(**context):
@@ -60,7 +92,10 @@ def validate_entries_callable(**context):
     filters out invalid entries and passes valid ones downstream."""
     t0 = time.time()
     ti = context["ti"]
-    journals = ti.xcom_pull(task_ids="fetch_new_entries", key="incoming_journals")
+    # prefer preprocessed journals (new preprocess step); fall back to fetched ones
+    journals = ti.xcom_pull(task_ids="preprocess_entries", key="preprocessed_journals")
+    if journals is None:
+        journals = ti.xcom_pull(task_ids="fetch_new_entries", key="incoming_journals")
 
     if not journals:
         logger.warning("No journals to validate")
@@ -105,10 +140,20 @@ def embed_entries_callable(**context):
         return
 
     from embedding.embedder import embed_incoming_journals
-
     embedded_df = embed_incoming_journals(journals)
-    # convert to records for xcom — embeddings as lists
-    records = embedded_df.to_dict("records")
+
+    # create JSON-safe records for XCom: convert pd.Timestamp -> ISO string
+    records = []
+    for r in embedded_df.to_dict("records"):
+        if "entry_date" in r and r["entry_date"] is not None:
+            try:
+                # r["entry_date"] may already be a string if sanitized elsewhere
+                if not isinstance(r["entry_date"], str):
+                    r["entry_date"] = pd.Timestamp(r["entry_date"]).isoformat()
+            except Exception:
+                # fallback: leave as-is
+                pass
+        records.append(r)
     ti.xcom_push(key="embedded_journals", value=records)
     ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
     logger.info(f"Embedded {len(records)} incoming journals")
@@ -209,7 +254,7 @@ with DAG(
     default_args=default_args,
     description=(
         "Micro-batch pipeline for incoming patient journals: "
-        "fetch, validate, embed, store, update analytics"
+        "fetch, preprocess, validate, embed, store, update analytics"
     ),
     schedule="*/30 * * * *",
     start_date=datetime(2025, 1, 1),
@@ -218,12 +263,34 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    t_start = EmptyOperator(task_id="start")
+    def start_callable(**context):
+        """Initialize run metadata for incoming micro-batch and push run_id + duration.
+
+        Uses the same run id format as the main `calm_ai_pipeline` (YYYYMMDD_HHMMSS).
+        """
+        import time
+        from datetime import datetime, timezone
+
+        ti = context["ti"]
+
+        # Follow calm_ai_pipeline: generate a timestamp-based run_id
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+        ti.xcom_push(key="run_id", value=run_id)
+        ti.xcom_push(key="duration", value=0)
+        logger.info(f"Start task initialized run_id={run_id}")
+
+    t_start = PythonOperator(task_id="start", python_callable=start_callable)
 
     # short-circuits the entire dag if no new entries
     t_fetch = ShortCircuitOperator(
         task_id="fetch_new_entries",
         python_callable=fetch_new_entries_callable,
+    )
+
+    t_preprocess = PythonOperator(
+        task_id="preprocess_entries",
+        python_callable=preprocess_entries_callable,
     )
 
     t_validate = PythonOperator(
@@ -251,10 +318,19 @@ with DAG(
         python_callable=mark_processed_callable,
     )
 
+    def success_email_callable(**context):
+        from alerts.success_email import send_incoming_success_email
+        send_incoming_success_email(**context)
+
+    t_success_email = PythonOperator(
+        task_id="success_email",
+        python_callable=success_email_callable,
+    )
+
     t_end = EmptyOperator(
         task_id="end",
         trigger_rule="none_failed_min_one_success",
     )
 
     # dependency graph
-    t_start >> t_fetch >> t_validate >> t_embed >> t_store >> t_analytics >> t_mark >> t_end
+    t_start >> t_fetch >> t_preprocess >> t_validate >> t_embed >> t_store >> t_analytics >> t_mark >> t_success_email >> t_end
