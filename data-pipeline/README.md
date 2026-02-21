@@ -380,11 +380,23 @@ start
 **Trigger**: Every 30 minutes | **Mode**: Incremental append
 
 ```
-start → fetch_new_entries → validate_entries → embed_entries
-  → store_to_mongodb → update_analytics → mark_processed → end
+start → fetch_new_entries → preprocess_entries → validate_entries → embed_entries
+  → store_to_mongodb → update_analytics → mark_processed → success_email → end
 ```
 
 Uses a `ShortCircuitOperator` - if no new journal entries are found in MongoDB, the entire DAG run is skipped.
+
+Overview — Incoming Journals Pipeline
+
+The `incoming_journals_pipeline` is a compact, sequential micro-batch DAG that incrementally ingests new journal entries from the `incoming_journals` staging collection and updates the primary stores and per-patient analytics. Key behaviors and conventions:
+
+- Tasks: `start` → `fetch_new_entries` → `preprocess_entries` → `validate_entries` → `embed_entries` → `store_to_mongodb` → `update_analytics` → `mark_processed` → `success_email`.
+- In-memory preprocessing: `preprocess_entries` applies the same preprocessing and temporal feature engineering used by the batch pipeline but operates on the runtime records (no parquet I/O). It uses XCOM to pass the data to the tasks forward.
+- XCom conventions: tasks push `duration` (float seconds) for runtime telemetry; `start` pushes a `run_id` (timestamp format YYYYMMDD_HHMMSS); `fetch_new_entries` pushes `journal_count`; embedding and storage tasks push sanitized, JSON-safe records and insert metrics.
+- Safety: before pushing to XCom, non-JSON-native types (pandas Timestamps, numpy scalars/arrays) are converted to ISO strings, Python primitives or lists to ensure Airflow's JSON XCom serialization works reliably.
+- Notifications and auditing: `store_to_mongodb` records run metadata and collection stats in `pipeline_metadata`; `success_email` sends a concise run summary (durations, counts, insert results) to the configured recipients.
+
+The pipeline is intentionally sequential and idempotent for the micro-batch use case — `max_active_runs=1` prevents overlapping runs and `mark_processed` records prevent reprocessing of the same entries.
 
 ---
 
