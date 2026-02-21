@@ -7,12 +7,14 @@ from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
+import numpy as np
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
 import config
 
 from .base_preprocessor import BasePreprocessor
+from typing import List, Dict, Any
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -194,6 +196,90 @@ class JournalPreprocessor:
         logger.info(f"{before_validate} → {len(self.df)} entries (filtered {before_validate - len(self.df)} invalid)")
         
         return self.save()
+
+
+def process_incoming_journals(journals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Preprocess a list of incoming journal dicts in-memory and return list of records.
+
+    Reuses the same sequence of steps as `JournalPreprocessor.run` but without
+    writing to disk. This is suitable for the micro-batch DAG where entries are
+    passed via XComs.
+    """
+    import time
+
+    t0 = time.time()
+    if not journals:
+        logging.getLogger(__name__).warning("process_incoming_journals called with empty list")
+        return []
+
+    df = pd.DataFrame(journals)
+    pre = JournalPreprocessor()
+    pre.df = df.copy()
+
+    logger.info(f"Step 1/7: Loaded {len(pre.df)} incoming journals into DataFrame")
+
+    logger.info("Step 2/7: Parsing dates")
+    pre.parse_dates()
+    valid_dates = pre.df['entry_date'].notna().sum() if 'entry_date' in pre.df.columns else 0
+    logger.info(f"  Parsed dates — {valid_dates} valid dates")
+
+    logger.info("Step 3/7: Applying text preprocessing + stats")
+    pre.apply_preprocessing()
+    logger.info("  Text preprocessing complete")
+
+    logger.info("Step 4/7: Adding temporal features")
+    pre.add_temporal_features()
+    logger.info("  Temporal features added")
+
+    logger.info("Step 5/7: Calculating days_since_last per patient")
+    pre.calculate_days_since_last()
+    logger.info("  days_since_last computed")
+
+    logger.info("Step 6/7: Creating embedding text")
+    pre.create_embedding_text()
+    logger.info("  embedding_text created")
+
+    logger.info("Step 7/7: Validating and filtering records")
+    before_validate = len(pre.df)
+    pre.validate()
+    logger.info(f"  Validation complete: {before_validate} → {len(pre.df)} entries")
+
+    records = pre.df.to_dict("records")
+
+    def _sanitize_value(v):
+        # pd.Timestamp -> ISO string (covers entry_date)
+        if isinstance(v, pd.Timestamp):
+            return v.isoformat()
+        # NA / NaT / None -> None
+        try:
+            if pd.isna(v):
+                return None
+        except Exception:
+            pass
+        # numpy scalar -> python native
+        if isinstance(v, np.generic):
+            return v.item()
+        # pandas extension scalar e.g. UInt32 from isocalendar (covers week_number)
+        if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+            try:
+                return v.item()
+            except Exception:
+                pass
+        if isinstance(v, (list, tuple)):
+            return [_sanitize_value(x) for x in v]
+        if hasattr(v, "tolist") and not isinstance(v, (str, bytes)):
+            try:
+                return v.tolist()
+            except Exception:
+                pass
+        return v
+
+    safe_records = [{k: _sanitize_value(v) for k, v in r.items()} for r in records]
+
+    elapsed = round(time.time() - t0, 2)
+    logging.getLogger(__name__).info(f"Processed {len(safe_records)} incoming journals in {elapsed}s")
+    return safe_records
+
 
 
 if __name__ == "__main__":

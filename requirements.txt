@@ -10,3 +10,6 @@ sentence-transformers>=3.0.0
 pymongo>=4.6.0
 dvc>=3.0
 dvc-gs
+certifi
+urllib3
+pytest

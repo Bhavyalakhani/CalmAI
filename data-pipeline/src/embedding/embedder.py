@@ -282,6 +282,10 @@ def embed_incoming_journals(
     if "therapist_id" not in df.columns:
         df["therapist_id"] = None
 
+    # ensure entry_date is a pandas Timestamp for downstream embedding/stats
+    if "entry_date" in df.columns:
+        df["entry_date"] = pd.to_datetime(df["entry_date"], errors="coerce")
+
     df = _preprocess_journal_df(df)
 
     service = EmbeddingService(model_name=model_name, batch_size=batch_size)
@@ -295,6 +299,37 @@ def embed_incoming_journals(
         if col not in df.columns:
             df[col] = None
     df = df[JOURNAL_EMBEDDING_SCHEMA]
+
+    # sanitize dataframe so returned records are JSON-serializable when pushed via XCom
+    import numpy as np
+
+    def _sanitize_cell(v):
+        # pandas Timestamp -> ISO string
+        if isinstance(v, pd.Timestamp):
+            return v.isoformat()
+        # pandas/np NA -> None
+        try:
+            if pd.isna(v):
+                return None
+        except Exception:
+            pass
+        if isinstance(v, (np.generic,)):
+            return v.item()
+        # arrays/ndarrays -> lists
+        if hasattr(v, "tolist") and not isinstance(v, (str, bytes)):
+            try:
+                return v.tolist()
+            except Exception:
+                pass
+        return v
+
+    # apply sanitize across dataframe (avoid converting embedding lists)
+    for c in df.columns:
+        if c == "embedding":
+            # ensure embeddings are lists (not numpy arrays)
+            df[c] = df[c].apply(lambda x: x.tolist() if hasattr(x, "tolist") and not isinstance(x, list) else x)
+        else:
+            df[c] = df[c].apply(_sanitize_cell)
 
     logger.info(f"Embedded {len(df)} incoming journal entries")
     return df

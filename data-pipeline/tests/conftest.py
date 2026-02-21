@@ -12,6 +12,7 @@ import pandas as pd
 # make src/ and configs/ importable without installing
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "configs"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 # mock settings — used by almost every module
