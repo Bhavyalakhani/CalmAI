@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 
 from app.config import settings
@@ -13,8 +14,8 @@ from app.services.auth_service import hash_password
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# default password for all seed users
-DEFAULT_PASSWORD = "calmai123"
+# seed password from env, falls back to default for local dev
+DEFAULT_PASSWORD = os.getenv("SEED_PASSWORD", "calmai123")
 
 
 async def seed():
