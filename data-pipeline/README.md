@@ -39,24 +39,28 @@ All clinical judgment stays with human therapists - the system surfaces informat
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Apache Airflow (Docker)                         │
-│                                                                        │
-│   DAG 1: calm_ai_data_pipeline (manual trigger, batch)                 │
-│   ┌───────┐   ┌──────────┐   ┌──────────┐   ┌──────┐   ┌───────────┐  │
-│   │Acquire├──►│Preprocess├──►│ Validate ├──►│ Bias ├──►│  Embed    │  │
-│   └───────┘   └──────────┘   └────┬─────┘   └──────┘   └─────┬─────┘  │
-│                                   │ gate                      │        │
-│                              pass/fail                        ▼        │
-│                                              ┌─────────┐  ┌───────┐   │
-│                                              │ MongoDB  │◄─┤ Store │   │
-│                                              │  Atlas   │  └───┬───┘   │
-│   DAG 2: incoming_journals_pipeline          │          │      │       │
-│   (*/30 * * * *, incremental append)         │          │      ▼       │
-│   ┌───────┐  ┌────────┐  ┌───────┐  ┌─────┐ │          │  ┌───────┐   │
-│   │ Fetch ├─►│Validate├─►│ Embed ├─►│Store├►│          │  │ Email │   │
-│   └───────┘  └────────┘  └───────┘  └─────┘ └──────────┘  └───────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          Apache Airflow (Docker)                            │
+│                                                                             │
+│  DAG 1: calm_ai_data_pipeline (manual trigger, batch)                       │
+│  ┌───────┐   ┌──────────┐   ┌──────────┐   ┌──────┐   ┌───────┐            │
+│  │Acquire├──►│Preprocess├──►│ Validate ├──►│ Bias ├──►│ Embed │            │
+│  └───────┘   └──────────┘   └────┬─────┘   └──────┘   └───┬───┘            │
+│                                  │ gate                    │                │
+│                             pass/fail                      ▼                │
+│                                             ┌─────────┐ ┌───────┐          │
+│                                             │ MongoDB  │◄┤ Store │          │
+│                                             │  Atlas   │ └───┬───┘          │
+│  DAG 2: incoming_journals_pipeline          │(6 colls) │     │              │
+│  (*/30 * * * *, incremental append)         │          │     ▼              │
+│  ┌─────┐ ┌──────┐ ┌────┐ ┌─────┐ ┌─────┐   │          │ ┌───────┐          │
+│  │Fetch├►│Prepro├►│Val.├►│Embed├►│Store├──►│          │ │ Email │          │
+│  └─────┘ └──────┘ └────┘ └─────┘ └──┬──┘   └──────────┘ └───────┘          │
+│                                     ▼                                       │
+│                    ┌─────────┐  ┌──────┐  ┌───────┐                         │
+│                    │Analytics├─►│ Mark ├─►│ Email │                         │
+│                    └─────────┘  └──────┘  └───────┘                         │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 External Services:
   • HuggingFace Datasets (conversation data)
@@ -76,7 +80,7 @@ External Services:
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (199 tests, 12 test files) |
+| Testing | pytest (218 tests, 13 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -225,7 +229,7 @@ cd data-pipeline
 python run_pipeline.py
 ```
 
-This runs all 9 pipeline steps sequentially with timing:
+This runs all 10 pipeline steps sequentially with timing:
 
 | Step | Description |
 |---|---|
@@ -238,6 +242,7 @@ This runs all 9 pipeline steps sequentially with timing:
 | 7 | Bias analysis - journals |
 | 8 | Embed conversations + journals |
 | 9 | Store to MongoDB |
+| 10 | DVC version tracking (`dvc commit --force` + `dvc push`) |
 
 At the end, a summary table shows duration per step and the total runtime.
 
@@ -285,18 +290,20 @@ data-pipeline/
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 199 tests across 12 files
+├── tests/                           # 218 tests across 13 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
 │   ├── test_conversation_preprocessor.py
 │   ├── test_journal_preprocessor.py
+│   ├── test_preprocessing.py
 │   ├── test_schema_validator.py
 │   ├── test_slicer.py
 │   ├── test_conversation_bias.py
 │   ├── test_journal_bias.py
 │   ├── test_embedding.py
 │   ├── test_storage.py
+│   ├── test_analytics.py
 │   └── test_incoming_pipeline.py
 │
 ├── data/
@@ -539,6 +546,8 @@ dvc status
 - `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id`
 - `conversations`: `conversation_id` (unique)
 - `journals`: `journal_id` (unique), `patient_id`, `therapist_id`
+- `incoming_journals`: `journal_id` (unique), `patient_id`, `is_processed`
+- `patient_analytics`: `patient_id` (unique)
 
 ### Vector Search
 
@@ -559,22 +568,24 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (199 tests)
+### Test Summary (218 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
-| `test_data_downloader.py` | 9 | HuggingFace download, validation, deduplication |
-| `test_generate_journals.py` | 10 | Gemini API calls, JSON parsing, date generation |
-| `test_conversation_preprocessor.py` | 9 | Text cleaning, dedup, embedding text creation |
-| `test_journal_preprocessor.py` | 11 | Date parsing, temporal features, forward-fill |
-| `test_schema_validator.py` | 19 | All expectation types, pass/fail reporting |
-| `test_slicer.py` | 12 | Keyword slicing, threshold detection |
-| `test_conversation_bias.py` | 9 | Topic classification, severity, visualizations |
-| `test_journal_bias.py` | 9 | Theme classification, temporal analysis |
-| `test_embedding.py` | 22 | Embedding generation, batch processing, incoming |
-| `test_storage.py` | 30 | MongoDB CRUD, batch inserts, indexes, stats |
-| `test_incoming_pipeline.py` | 20 | Validation, staging, analytics, end-to-end |
-| `conftest.py` | - | Shared fixtures, mock settings |
+| `test_data_downloader.py` | 14 | HuggingFace download, validation, deduplication |
+| `test_generate_journals.py` | 13 | Gemini API calls, JSON parsing, date generation |
+| `test_conversation_preprocessor.py` | 14 | Text cleaning, dedup, embedding text creation |
+| `test_journal_preprocessor.py` | 17 | Date parsing, temporal features, forward-fill |
+| `test_preprocessing.py` | 2 | Cross-preprocessor integration tests |
+| `test_schema_validator.py` | 32 | All expectation types, pass/fail reporting, incoming validation |
+| `test_slicer.py` | 17 | Keyword slicing, threshold detection |
+| `test_conversation_bias.py` | 19 | Topic classification, severity, visualizations |
+| `test_journal_bias.py` | 20 | Theme classification, temporal analysis |
+| `test_embedding.py` | 19 | Embedding generation, batch processing, incoming |
+| `test_storage.py` | 24 | MongoDB CRUD, batch inserts, indexes, stats |
+| `test_analytics.py` | 5 | Patient theme classification, analytics computation |
+| `test_incoming_pipeline.py` | 22 | Validation, staging, analytics, DAG callable tests |
+| `conftest.py` | - | Shared fixtures, mock settings, sample DataFrames |
 
 All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers) are mocked in tests.
 
@@ -626,7 +637,7 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Vector search returns results via Atlas
 - [ ] Bias reports in `reports/bias/` with visualization PNGs
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
-- [ ] All 199 tests passing (`pytest tests/ -v`)
+- [ ] All 218 tests passing (`pytest tests/ -v`)
 
 ---
 
