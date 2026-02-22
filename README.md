@@ -153,7 +153,7 @@ dvc pull
 cd backend
 pip install -r requirements.txt
 
-# configure (root .env must exist with MONGODB_URI, JWT_SECRET, GEMINI_API_KEY)
+# configure (root .env must exist with MONGODB_URI, JWT_SECRET, GEMINI_API_KEY, SEED_PASSWORD)
 python -m app.seed                # Seed therapist (dr.chen@calmai.com) + 10 patients
 uvicorn app.main:app --reload     # Start server at http://localhost:8000
 # API docs at http://localhost:8000/docs

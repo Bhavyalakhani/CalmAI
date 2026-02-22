@@ -75,7 +75,7 @@ pip install -r requirements.txt
 
 # configure (root .env is used by the backend)
 cp ../.env.example ../.env
-# fill in: MONGODB_URI, JWT_SECRET, GEMINI_API_KEY
+# fill in: MONGODB_URI, JWT_SECRET, GEMINI_API_KEY, SEED_PASSWORD
 ```
 
 ## Running
