@@ -73,14 +73,9 @@ backend/
 cd backend
 pip install -r requirements.txt
 
-# create .env in project root or backend/
-# required:
-MONGODB_URI=mongodb+srv://...
-MONGODB_DATABASE=calm_ai_db
-JWT_SECRET=your-secret-key
-GEMINI_API_KEY=your-gemini-key
-GEMINI_MODEL=gemini-2.5-flash
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+# configure (root .env is used by the backend)
+cp ../.env.example ../.env
+# fill in: MONGODB_URI, JWT_SECRET, GEMINI_API_KEY
 ```
 
 ## Running
