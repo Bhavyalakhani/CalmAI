@@ -5,7 +5,6 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
 
 from app.config import settings
 from app.services.db import db
@@ -14,41 +13,39 @@ from app.services.auth_service import hash_password
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# seed password from env, falls back to default for local dev
-DEFAULT_PASSWORD = os.getenv("SEED_PASSWORD", "calmai123")
+# seed password from env
+DEFAULT_PASSWORD = os.getenv("SEED_PASSWORD")
 
 
 async def seed():
-    """create therapist + 10 patient users matching data-pipeline profiles"""
+    """create therapist + 10 patient users matching data-pipeline profiles, skips existing"""
     await db.connect()
 
-    # check if users already exist
-    existing = await db.users.count_documents({})
-    if existing > 0:
-        logger.info(f"Database already has {existing} users — skipping seed")
-        await db.close()
-        return
-
     hashed_pw = hash_password(DEFAULT_PASSWORD)
-    now = datetime.now(timezone.utc).isoformat()
 
-    # create therapist
-    therapist_doc = {
-        "email": "dr.chen@calmai.com",
-        "hashed_password": hashed_pw,
-        "name": "Dr. Sarah Chen",
-        "role": "therapist",
-        "avatar_url": None,
-        "created_at": "2024-06-15T00:00:00Z",
-        "specialization": "Cognitive Behavioral Therapy",
-        "license_number": "PSY-2024-11892",
-        "practice_name": "Mindful Path Clinic",
-        "patient_ids": [],  # will be populated after patients are created
-    }
+    # upsert therapist (skip if email already exists)
+    therapist_email = "dr.chen@calmai.com"
+    existing_therapist = await db.users.find_one({"email": therapist_email})
 
-    therapist_result = await db.users.insert_one(therapist_doc)
-    therapist_id = str(therapist_result.inserted_id)
-    logger.info(f"Created therapist: Dr. Sarah Chen (id: {therapist_id})")
+    if existing_therapist:
+        therapist_id = str(existing_therapist["_id"])
+        logger.info(f"Therapist already exists: {therapist_email} (id: {therapist_id})")
+    else:
+        therapist_doc = {
+            "email": therapist_email,
+            "hashed_password": hashed_pw,
+            "name": "Dr. Sarah Chen",
+            "role": "therapist",
+            "avatar_url": None,
+            "created_at": "2024-06-15T00:00:00Z",
+            "specialization": "Cognitive Behavioral Therapy",
+            "license_number": "PSY-2024-11892",
+            "practice_name": "Mindful Path Clinic",
+            "patient_ids": [],
+        }
+        therapist_result = await db.users.insert_one(therapist_doc)
+        therapist_id = str(therapist_result.inserted_id)
+        logger.info(f"Created therapist: Dr. Sarah Chen (id: {therapist_id})")
 
     # patient profiles matching data-pipeline/configs/patient_profiles.yaml
     patients = [
@@ -64,8 +61,16 @@ async def seed():
         {"patient_id": "patient_010", "name": "Quinn Anderson", "email": "quinn.anderson@email.com", "dob": "1963-10-08", "onboarded": "2025-05-10T00:00:00Z"},
     ]
 
-    patient_ids = []
+    new_patient_ids = []
+    skipped = 0
     for p in patients:
+        existing = await db.users.find_one({"email": p["email"]})
+        if existing:
+            new_patient_ids.append(str(existing["_id"]))
+            skipped += 1
+            logger.info(f"Patient already exists: {p['name']} ({p['email']})")
+            continue
+
         patient_doc = {
             "email": p["email"],
             "hashed_password": hashed_pw,
@@ -81,15 +86,16 @@ async def seed():
         }
         result = await db.users.insert_one(patient_doc)
         patient_id = str(result.inserted_id)
-        patient_ids.append(patient_id)
+        new_patient_ids.append(patient_id)
         logger.info(f"Created patient: {p['name']} (id: {patient_id}, pipeline_id: {p['patient_id']})")
 
-    # link all patients to the therapist
+    # ensure all patient ids are linked to the therapist
+    from bson import ObjectId
     await db.users.update_one(
-        {"_id": therapist_result.inserted_id},
-        {"$set": {"patient_ids": patient_ids}},
+        {"email": therapist_email},
+        {"$addToSet": {"patient_ids": {"$each": new_patient_ids}}},
     )
-    logger.info(f"Linked {len(patient_ids)} patients to therapist")
+    logger.info(f"Linked patients to therapist ({skipped} already existed, {len(new_patient_ids) - skipped} new)")
 
     # create indexes on users collection
     await db.users.create_index("email", unique=True)

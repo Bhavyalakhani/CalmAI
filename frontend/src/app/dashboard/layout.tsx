@@ -42,8 +42,13 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
-  const { user, logout } = useAuth();
+  const { user, isLoading, logout } = useAuth();
   const therapist = user as Therapist | null;
+
+  // block render until auth is resolved and role is verified
+  if (isLoading || !user || user.role !== "therapist") {
+    return null;
+  }
 
   // derive initials from therapist name
   const initials = therapist?.name

@@ -75,12 +75,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // redirect unauthenticated users away from protected routes
+  // redirect wrong roles to their correct area
+  // clear tokens when user visits login/signup (fresh session)
   useEffect(() => {
     if (isLoading) return;
 
     const isPublic = PUBLIC_ROUTES.includes(pathname);
+
+    // if user lands on login/signup with a stale token, clear it
+    if ((pathname === "/login" || pathname === "/signup") && !user) {
+      clearTokens();
+    }
+
+    // unauthenticated on protected route -> login
     if (!user && !isPublic) {
       router.push("/login");
+      return;
+    }
+
+    // role-based route guards
+    if (user) {
+      const isDashboard = pathname.startsWith("/dashboard");
+      const isJournal = pathname.startsWith("/journal");
+
+      // therapists cannot access journal routes
+      if (user.role === "therapist" && isJournal) {
+        router.push("/dashboard");
+        return;
+      }
+
+      // patients cannot access dashboard routes
+      if (user.role === "patient" && isDashboard) {
+        router.push("/journal");
+        return;
+      }
+
+      // authenticated user on login/signup -> redirect to their home
+      if (pathname === "/login" || pathname === "/signup") {
+        router.push(user.role === "therapist" ? "/dashboard" : "/journal");
+        return;
+      }
     }
   }, [user, isLoading, pathname, router]);
 
