@@ -24,14 +24,15 @@ import {
 } from "@/components/ui/tooltip";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { mockTherapist } from "@/lib/mock-data";
+import { useAuth } from "@/lib/auth-context";
+import type { Therapist } from "@/types";
 
 const navItems = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/patients", label: "Patients", icon: Users },
   { href: "/dashboard/conversations", label: "Conversations", icon: MessageSquare },
   { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/dashboard/search", label: "RAG Search", icon: Search },
+  { href: "/dashboard/search", label: "RAG Assistant", icon: Search },
 ];
 
 export default function DashboardLayout({
@@ -41,6 +42,16 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const { user, logout } = useAuth();
+  const therapist = user as Therapist | null;
+
+  // derive initials from therapist name
+  const initials = therapist?.name
+    ? therapist.name
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+    : "?";
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -115,15 +126,15 @@ export default function DashboardLayout({
         <div className="flex items-center justify-between border-t p-3">
           <div className="flex items-center gap-3 overflow-hidden">
             <Avatar className="h-8 w-8 shrink-0">
-              <AvatarFallback className="text-xs">SC</AvatarFallback>
+              <AvatarFallback className="text-xs">{initials}</AvatarFallback>
             </Avatar>
             {!collapsed && (
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">
-                  {mockTherapist.name}
+                  {therapist?.name ?? "Therapist"}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {mockTherapist.specialization}
+                  {therapist?.specialization ?? ""}
                 </p>
               </div>
             )}
@@ -144,9 +155,9 @@ export default function DashboardLayout({
       </aside>
 
       {/* main content */}
-      <main className="flex flex-1 flex-col overflow-y-auto">
+      <main className="flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
-        <header className="flex h-16 items-center justify-between border-b px-6">
+        <header className="flex h-16 shrink-0 items-center justify-between border-b px-6">
           <div>
             <h1 className="text-lg font-semibold">
               {navItems.find(
@@ -157,17 +168,15 @@ export default function DashboardLayout({
             </h1>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">
-                <LogOut className="mr-2 h-4 w-4" />
-                Sign out
-              </Link>
+            <Button variant="ghost" size="sm" onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign out
             </Button>
           </div>
         </header>
 
         {/* Page Content */}
-        <div className="flex-1 p-6">{children}</div>
+        <div className="flex-1 overflow-y-auto p-6">{children}</div>
       </main>
     </div>
   );

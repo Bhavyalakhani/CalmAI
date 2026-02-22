@@ -14,6 +14,20 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+import { mockPatient } from "@/__tests__/mock-api-data";
+
+vi.mock("@/lib/auth-context", () => ({
+  useAuth: () => ({
+    user: mockPatient,
+    isLoading: false,
+    isAuthenticated: true,
+    login: vi.fn(),
+    signup: vi.fn(),
+    logout: vi.fn(),
+  }),
+  AuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 import JournalSettingsPage from "@/app/journal/settings/page";
 
 describe("Journal settings page", () => {

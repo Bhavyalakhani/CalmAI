@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,20 +15,58 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Brain, ArrowRight, Stethoscope, BookHeart } from "lucide-react";
 import type { UserRole } from "@/types";
+import { useAuth } from "@/lib/auth-context";
 
 export default function SignupPage() {
-  const router = useRouter();
+  const { signup } = useAuth();
   const [step, setStep] = useState<"role" | "form">("role");
   const [role, setRole] = useState<UserRole>("therapist");
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
-    // simulate signup — replace with real api call
-    await new Promise((r) => setTimeout(r, 1200));
-    setIsLoading(false);
-    router.push(role === "therapist" ? "/dashboard" : "/journal");
+    setError(null);
+
+    const form = e.currentTarget;
+    const firstName = (form.elements.namedItem("firstName") as HTMLInputElement).value;
+    const lastName = (form.elements.namedItem("lastName") as HTMLInputElement).value;
+    const email = (form.elements.namedItem("email") as HTMLInputElement).value;
+    const password = (form.elements.namedItem("password") as HTMLInputElement).value;
+
+    try {
+      if (role === "therapist") {
+        const license = (form.elements.namedItem("license") as HTMLInputElement).value;
+        const specialization = (form.elements.namedItem("specialization") as HTMLInputElement).value;
+        const practice = (form.elements.namedItem("practice") as HTMLInputElement)?.value;
+        await signup({
+          email,
+          password,
+          name: `${firstName} ${lastName}`,
+          role: "therapist",
+          licenseNumber: license,
+          specialization,
+          practiceName: practice || undefined,
+        });
+      } else {
+        const therapistCode = (form.elements.namedItem("therapistCode") as HTMLInputElement).value;
+        const dob = (form.elements.namedItem("dob") as HTMLInputElement).value;
+        await signup({
+          email,
+          password,
+          name: `${firstName} ${lastName}`,
+          role: "patient",
+          therapistId: therapistCode,
+          dateOfBirth: dob,
+        });
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Signup failed";
+      setError(message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -106,11 +143,18 @@ export default function SignupPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {error && (
+                <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="firstName">First name</Label>
                   <Input
                     id="firstName"
+                    name="firstName"
                     placeholder="Sarah"
                     required
                     autoFocus
@@ -118,7 +162,7 @@ export default function SignupPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="lastName">Last name</Label>
-                  <Input id="lastName" placeholder="Chen" required />
+                  <Input id="lastName" name="lastName" placeholder="Chen" required />
                 </div>
               </div>
 
@@ -126,6 +170,7 @@ export default function SignupPage() {
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
+                  name="email"
                   type="email"
                   placeholder="you@example.com"
                   required
@@ -136,6 +181,7 @@ export default function SignupPage() {
                 <Label htmlFor="password">Password</Label>
                 <Input
                   id="password"
+                  name="password"
                   type="password"
                   placeholder="Min 8 characters"
                   required
@@ -150,6 +196,7 @@ export default function SignupPage() {
                     <Label htmlFor="license">License number</Label>
                     <Input
                       id="license"
+                      name="license"
                       placeholder="PSY-2024-XXXXX"
                       required
                     />
@@ -158,6 +205,7 @@ export default function SignupPage() {
                     <Label htmlFor="specialization">Specialization</Label>
                     <Input
                       id="specialization"
+                      name="specialization"
                       placeholder="e.g. Cognitive Behavioral Therapy"
                       required
                     />
@@ -169,6 +217,7 @@ export default function SignupPage() {
                     </Label>
                     <Input
                       id="practice"
+                      name="practice"
                       placeholder="e.g. Mindful Path Clinic"
                     />
                   </div>
@@ -184,13 +233,14 @@ export default function SignupPage() {
                     </Label>
                     <Input
                       id="therapistCode"
+                      name="therapistCode"
                       placeholder="Enter the code from your therapist"
                       required
                     />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="dob">Date of birth</Label>
-                    <Input id="dob" type="date" required />
+                    <Input id="dob" name="dob" type="date" required />
                   </div>
                 </>
               )}

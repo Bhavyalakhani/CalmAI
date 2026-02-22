@@ -11,7 +11,8 @@ import pandas as pd
 from pymongo import MongoClient, IndexModel, ASCENDING
 from pymongo.database import Database
 from pymongo.collection import Collection
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, OperationFailure
+from pymongo.operations import SearchIndexModel
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
@@ -125,7 +126,58 @@ class MongoDBClient:
             IndexModel([("patient_id", ASCENDING)], unique=True),
         ])
 
+        # atlas vector search index on rag_vectors.embedding
+        # this is idempotent — skips if the index already exists
+        self._ensure_vector_search_index()
+
         logger.info("Indexes created successfully")
+
+    def _ensure_vector_search_index(self):
+        """create the atlas vector search index if it doesn't already exist.
+
+        requires an M10+ atlas cluster (vector search is not available on
+        shared/free tier). silently skips if the index exists or if the
+        cluster doesn't support search indexes.
+        """
+        index_name = "vector_index"
+
+        try:
+            # check if the index already exists
+            existing = list(self.rag_vectors.list_search_indexes())
+            for idx in existing:
+                if idx.get("name") == index_name:
+                    logger.info(f"Vector search index '{index_name}' already exists, skipping")
+                    return
+
+            # create the index
+            model = SearchIndexModel(
+                definition={
+                    "fields": [
+                        {
+                            "type": "vector",
+                            "path": "embedding",
+                            "numDimensions": 384,
+                            "similarity": "cosine",
+                        },
+                        {
+                            "type": "filter",
+                            "path": "patient_id",
+                        },
+                        {
+                            "type": "filter",
+                            "path": "doc_type",
+                        },
+                    ]
+                },
+                name=index_name,
+                type="vectorSearch",
+            )
+            self.rag_vectors.create_search_index(model)
+            logger.info(f"Vector search index '{index_name}' created — may take 1-2 min to become active")
+        except OperationFailure as e:
+            logger.warning(f"Could not create vector search index (cluster may not support it): {e}")
+        except Exception as e:
+            logger.warning(f"Vector search index creation skipped: {e}")
 
     def drop_collections(self):
         self.connect()

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -11,9 +12,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Users,
   BookOpen,
@@ -25,19 +26,24 @@ import {
   ArrowRight,
   Clock,
   Sparkles,
+  Loader2,
 } from "lucide-react";
 import {
-  mockPatients,
-  mockDashboardStats,
-  mockPatientAnalytics,
-  mockJournalEntries,
-  mockMoodTrend,
-  getAnalyticsForPatient,
-  getJournalsForPatient,
-} from "@/lib/mock-data";
-import type { Patient, JournalEntry } from "@/types";
+  fetchPatients,
+  fetchDashboardStats,
+  fetchAnalytics,
+  fetchJournals,
+  fetchMoodTrend,
+} from "@/lib/api";
+import type {
+  Patient,
+  JournalEntry,
+  DashboardStats,
+  PatientAnalytics,
+  TrendDataPoint,
+} from "@/types";
 
-/* stat card */
+// stat card
 
 function StatCard({
   title,
@@ -76,11 +82,26 @@ function StatCard({
   );
 }
 
-/* mini mood sparkline (text-based chart) */
+// mini mood sparkline
 
-function MoodSparkline() {
-  const moods = mockMoodTrend;
+function MoodSparkline({ moods }: { moods: TrendDataPoint[] }) {
   const max = 5;
+
+  if (moods.length === 0) {
+    return (
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium">
+            Mood Trend (Selected Patient)
+          </CardTitle>
+          <CardDescription>Last 14 days</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">No mood data available.</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>
@@ -116,7 +137,7 @@ function MoodSparkline() {
   );
 }
 
-/* theme bar */
+// theme bar
 
 function ThemeBar({
   theme,
@@ -127,7 +148,7 @@ function ThemeBar({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="w-24 text-sm capitalize text-muted-foreground">
+      <span className="w-28 shrink-0 text-sm capitalize text-muted-foreground">
         {theme}
       </span>
       <div className="flex-1">
@@ -145,7 +166,7 @@ function ThemeBar({
   );
 }
 
-/* journal timeline item */
+// journal timeline item
 
 function JournalItem({ entry }: { entry: JournalEntry }) {
   return (
@@ -186,18 +207,19 @@ function JournalItem({ entry }: { entry: JournalEntry }) {
   );
 }
 
-/* patient list item */
+// patient list item
 
 function PatientItem({
   patient,
   isSelected,
   onClick,
+  analytics,
 }: {
   patient: Patient;
   isSelected: boolean;
   onClick: () => void;
+  analytics: PatientAnalytics | null;
 }) {
-  const analytics = getAnalyticsForPatient(patient.id);
   const initials = patient.name
     .split(" ")
     .map((n) => n[0])
@@ -221,18 +243,92 @@ function PatientItem({
         </p>
       </div>
       {analytics && analytics.totalEntries > 0 && (
-        <Badge variant="outline" className="text-[10px]">
-          <Activity className="mr-1 h-3 w-3" />
-          {analytics.themeDistribution[0]?.theme}
+        <Badge variant="outline" className="shrink-0 max-w-[100px] truncate text-[10px]">
+          <Activity className="mr-1 h-3 w-3 shrink-0" />
+          <span className="truncate">{analytics.themeDistribution[0]?.theme}</span>
         </Badge>
       )}
     </button>
   );
 }
 
-/* rag search placeholder */
+// rag assistant panel
 
-function RAGSearchPanel() {
+import ReactMarkdown from "react-markdown";
+
+// markdown prose styles for dashboard rag panel
+const ragMarkdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="mb-2 last:mb-0">{children}</p>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="mb-2 ml-4 list-disc space-y-1 last:mb-0">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="mb-2 ml-4 list-decimal space-y-1 last:mb-0">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li>{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold">{children}</strong>
+  ),
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="mb-1 mt-3 text-base font-semibold first:mt-0">{children}</h3>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h4 className="mb-1 mt-3 text-sm font-semibold first:mt-0">{children}</h4>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h5 className="mb-1 mt-2 text-sm font-semibold first:mt-0">{children}</h5>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="border-l-2 border-muted-foreground/30 pl-3 italic">{children}</blockquote>
+  ),
+  code: ({ children }: { children?: React.ReactNode }) => (
+    <code className="rounded bg-muted px-1 py-0.5 text-xs">{children}</code>
+  ),
+};
+
+function RAGAssistantPanel({
+  patients,
+  selectedPatientId,
+}: {
+  patients: Patient[];
+  selectedPatientId: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [sourceCount, setSourceCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSearch = async () => {
+    if (!query.trim()) return;
+    setLoading(true);
+    setError(null);
+    setAnswer(null);
+
+    try {
+      const { ragSearch } = await import("@/lib/api");
+      const data = await ragSearch({
+        query: query.trim(),
+        patientId: selectedPatientId || undefined,
+        sourceType: "journal",
+        topK: 5,
+      });
+      setAnswer(data.generatedAnswer ?? "No answer generated.");
+      setSourceCount(data.results.length);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Search failed";
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedName = patients.find((p) => p.id === selectedPatientId)?.name;
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -241,98 +337,264 @@ function RAGSearchPanel() {
           <CardTitle className="text-sm font-medium">RAG Assistant</CardTitle>
         </div>
         <CardDescription>
-          Ask questions about your patients&apos; journal data
+          {selectedName
+            ? `Ask questions about ${selectedName}\u2019s journal data`
+            : "Select a patient to query their journal data"}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="flex gap-2">
           <Input
-            placeholder="e.g. What themes appear in Alex's recent entries?"
+            placeholder={
+              selectedName
+                ? `e.g. What themes appear in ${selectedName}\u2019s recent entries?`
+                : "Select a patient from the list first"
+            }
             className="flex-1"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            disabled={loading}
           />
-          <Button size="icon" variant="outline">
-            <Search className="h-4 w-4" />
+          <Button
+            size="icon"
+            variant="outline"
+            onClick={handleSearch}
+            disabled={loading || !query.trim()}
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Search className="h-4 w-4" />
+            )}
           </Button>
         </div>
-        <div className="mt-4 rounded-lg border border-dashed p-8 text-center">
-          <p className="text-sm text-muted-foreground">
-            RAG-powered responses will appear here with source citations.
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            All answers are retrieved information — clinical judgment stays with
-            you.
-          </p>
-        </div>
+
+        {/* error */}
+        {error && (
+          <div className="mt-3 rounded-lg border border-destructive/50 p-3">
+            <p className="text-sm text-destructive">{error}</p>
+          </div>
+        )}
+
+        {/* loading */}
+        {loading && (
+          <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Searching journal data...
+          </div>
+        )}
+
+        {/* answer */}
+        {answer && !loading && (
+          <div className="mt-4 space-y-2">
+            <div className="rounded-lg border p-4">
+              <div className="text-sm leading-relaxed">
+                <ReactMarkdown components={ragMarkdownComponents}>
+                  {answer}
+                </ReactMarkdown>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-[10px]">
+                {sourceCount} sources retrieved
+              </Badge>
+              <span className="text-[10px] text-muted-foreground">
+                Retrieved information · Not clinical advice
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* empty state */}
+        {!answer && !loading && !error && (
+          <div className="mt-4 rounded-lg border border-dashed p-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              RAG-powered responses will appear here with source citations.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              All answers are retrieved information - clinical judgment stays
+              with you.
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
 }
 
-/* main dashboard page */
+// loading skeleton
+
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[...Array(4)].map((_, i) => (
+          <Card key={i}>
+            <CardHeader className="pb-2">
+              <Skeleton className="h-4 w-24" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-8 w-16" />
+              <Skeleton className="mt-2 h-3 w-32" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+        <Card>
+          <CardContent className="pt-6">
+            {[...Array(5)].map((_, i) => (
+              <Skeleton key={i} className="mb-3 h-12 w-full" />
+            ))}
+          </CardContent>
+        </Card>
+        <Skeleton className="h-64" />
+      </div>
+    </div>
+  );
+}
+
+// main dashboard page
 
 export default function DashboardOverview() {
-  const [selectedPatientId, setSelectedPatientId] = useState<string>(
-    mockPatients[0]?.id ?? ""
-  );
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [analyticsMap, setAnalyticsMap] = useState<
+    Record<string, PatientAnalytics>
+  >({});
+  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
+  const [selectedJournals, setSelectedJournals] = useState<JournalEntry[]>([]);
+  const [moodTrend, setMoodTrend] = useState<TrendDataPoint[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const selectedAnalytics = getAnalyticsForPatient(selectedPatientId);
-  const selectedJournals = getJournalsForPatient(selectedPatientId);
-  const selectedPatient = mockPatients.find(
-    (p) => p.id === selectedPatientId
-  );
+  // load initial data
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [patientsData, statsData] = await Promise.all([
+          fetchPatients(),
+          fetchDashboardStats(),
+        ]);
+        setPatients(patientsData);
+        setStats(statsData);
+
+        // load analytics for all patients
+        const analyticsResults: Record<string, PatientAnalytics> = {};
+        await Promise.all(
+          patientsData.map(async (p) => {
+            try {
+              const a = await fetchAnalytics(p.id);
+              analyticsResults[p.id] = a;
+            } catch {
+              // analytics may not exist for all patients
+            }
+          })
+        );
+        setAnalyticsMap(analyticsResults);
+
+        // select first patient
+        if (patientsData.length > 0) {
+          setSelectedPatientId(patientsData[0].id);
+        }
+      } catch (err) {
+        console.error("failed to load dashboard data:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  // load journals and mood for selected patient
+  useEffect(() => {
+    if (!selectedPatientId) return;
+
+    const loadPatientData = async () => {
+      try {
+        const [journals, mood] = await Promise.all([
+          fetchJournals({ patientId: selectedPatientId, limit: 10 }),
+          fetchMoodTrend(selectedPatientId, 14).catch(() => []),
+        ]);
+        setSelectedJournals(journals);
+        setMoodTrend(mood);
+      } catch (err) {
+        console.error("failed to load patient data:", err);
+        setSelectedJournals([]);
+        setMoodTrend([]);
+      }
+    };
+
+    loadPatientData();
+  }, [selectedPatientId]);
+
+  if (loading) return <DashboardSkeleton />;
+
+  const selectedAnalytics = analyticsMap[selectedPatientId] ?? null;
+  const selectedPatient = patients.find((p) => p.id === selectedPatientId);
 
   return (
     <div className="space-y-6">
+      {/* header */}
+      <div>
+        <h2 className="text-lg font-semibold">Overview</h2>
+        <p className="text-sm text-muted-foreground">
+          Your practice at a glance - {patients.length} patients, {stats?.totalJournals ?? 0} journal entries
+        </p>
+      </div>
+
       {/* stats row */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           title="Total Patients"
-          value={mockDashboardStats.totalPatients.toString()}
+          value={stats?.totalPatients.toString() ?? "0"}
           description="+2 this month"
           icon={Users}
           trend="up"
         />
         <StatCard
           title="Journal Entries"
-          value={mockDashboardStats.totalJournals.toString()}
+          value={stats?.totalJournals.toString() ?? "0"}
           description="+18 this week"
           icon={BookOpen}
           trend="up"
         />
         <StatCard
           title="Conversations"
-          value={mockDashboardStats.totalConversations.toLocaleString()}
+          value={stats?.totalConversations.toLocaleString() ?? "0"}
           description="Indexed in vector store"
           icon={MessageSquare}
         />
         <StatCard
           title="Active Patients"
-          value={`${mockDashboardStats.activePatients}/${mockDashboardStats.totalPatients}`}
-          description="Entries in last 7 days"
+          value={`${stats?.activePatients ?? 0}/${stats?.totalPatients ?? 0}`}
+          description="Journaled in the last 7 days"
           icon={Activity}
-          trend="up"
+          trend={stats?.activePatients && stats.activePatients > 0 ? "up" : null}
         />
       </div>
 
       {/* main grid */}
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
         {/* patient list */}
         <Card className="lg:row-span-2">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium">Patients</CardTitle>
             <CardDescription>
-              {mockPatients.length} active patients
+              {patients.length} active patients
             </CardDescription>
           </CardHeader>
           <CardContent className="px-2">
-            <ScrollArea className="h-[540px]">
+            <ScrollArea className="max-h-[540px]">
               <div className="space-y-0.5 px-1">
-                {mockPatients.map((patient) => (
+                {patients.map((patient) => (
                   <PatientItem
                     key={patient.id}
                     patient={patient}
                     isSelected={patient.id === selectedPatientId}
                     onClick={() => setSelectedPatientId(patient.id)}
+                    analytics={analyticsMap[patient.id] ?? null}
                   />
                 ))}
               </div>
@@ -342,29 +604,31 @@ export default function DashboardOverview() {
 
         {/* right column */}
         <div className="space-y-6">
-          {/* Patient Analytics */}
+          {/* patient analytics */}
           {selectedPatient && selectedAnalytics && (
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle className="text-sm font-medium">
-                      {selectedPatient.name} — Analytics
+                      {selectedPatient.name} - Analytics
                     </CardTitle>
                     <CardDescription>
                       {selectedAnalytics.totalEntries} entries over{" "}
                       {selectedAnalytics.dateRange?.spanDays ?? 0} days
                     </CardDescription>
                   </div>
-                  <Button variant="outline" size="sm">
-                    View Full Profile
-                    <ArrowRight className="ml-1 h-3 w-3" />
+                  <Button variant="outline" size="sm" asChild>
+                    <Link href={`/dashboard/patients/${selectedPatientId}`}>
+                      View Full Profile
+                      <ArrowRight className="ml-1 h-3 w-3" />
+                    </Link>
                   </Button>
                 </div>
               </CardHeader>
               <CardContent>
                 <div className="grid gap-6 sm:grid-cols-2">
-                  {/* Theme Distribution */}
+                  {/* theme distribution */}
                   <div className="space-y-3">
                     <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       Theme Distribution
@@ -382,7 +646,7 @@ export default function DashboardOverview() {
                     </div>
                   </div>
 
-                  {/* Quick Stats */}
+                  {/* quick stats */}
                   <div className="space-y-4">
                     <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       Summary
@@ -406,7 +670,7 @@ export default function DashboardOverview() {
                       </div>
                       <div className="rounded-lg border p-3 text-center">
                         <div className="text-lg font-bold">
-                          {selectedAnalytics.dateRange?.spanDays ?? "—"}
+                          {selectedAnalytics.dateRange?.spanDays ?? "-"}
                         </div>
                         <div className="text-[11px] text-muted-foreground">
                           Span (days)
@@ -414,8 +678,7 @@ export default function DashboardOverview() {
                       </div>
                       <div className="rounded-lg border p-3 text-center">
                         <div className="text-lg font-bold capitalize">
-                          {selectedAnalytics.themeDistribution[0]?.theme ??
-                            "—"}
+                          {selectedAnalytics.themeDistribution[0]?.theme ?? "-"}
                         </div>
                         <div className="text-[11px] text-muted-foreground">
                           Top theme
@@ -423,7 +686,7 @@ export default function DashboardOverview() {
                       </div>
                     </div>
 
-                    {/* Entry Frequency */}
+                    {/* entry frequency */}
                     <div>
                       <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         Monthly Frequency
@@ -466,11 +729,14 @@ export default function DashboardOverview() {
             </Card>
           )}
 
-          {/* Mood Sparkline */}
-          <MoodSparkline />
+          {/* mood sparkline */}
+          <MoodSparkline moods={moodTrend} />
 
-          {/* RAG Search */}
-          <RAGSearchPanel />
+          {/* rag assistant */}
+          <RAGAssistantPanel
+            patients={patients}
+            selectedPatientId={selectedPatientId}
+          />
         </div>
       </div>
 
@@ -480,7 +746,7 @@ export default function DashboardOverview() {
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm font-medium">
-              Recent Journal Entries —{" "}
+              Recent Journal Entries -{" "}
               {selectedPatient?.name ?? "Select a patient"}
             </CardTitle>
           </div>

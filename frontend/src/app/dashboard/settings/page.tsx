@@ -13,9 +13,13 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { mockTherapist } from "@/lib/mock-data";
+import { useAuth } from "@/lib/auth-context";
+import type { Therapist } from "@/types";
 
 export default function SettingsPage() {
+  const { user, logout } = useAuth();
+  const therapist = user as Therapist | null;
+
   return (
     <div className="max-w-2xl space-y-6">
       <div>
@@ -25,7 +29,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* Profile */}
+      {/* profile */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Profile</CardTitle>
@@ -35,11 +39,11 @@ export default function SettingsPage() {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="name">Full name</Label>
-              <Input id="name" defaultValue={mockTherapist.name} />
+              <Input id="name" defaultValue={therapist?.name ?? ""} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
-              <Input id="email" defaultValue={mockTherapist.email} />
+              <Input id="email" defaultValue={therapist?.email ?? ""} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -47,7 +51,7 @@ export default function SettingsPage() {
               <Label htmlFor="license">License number</Label>
               <Input
                 id="license"
-                defaultValue={mockTherapist.licenseNumber}
+                defaultValue={therapist?.licenseNumber ?? ""}
                 disabled
               />
             </div>
@@ -55,7 +59,7 @@ export default function SettingsPage() {
               <Label htmlFor="specialization">Specialization</Label>
               <Input
                 id="specialization"
-                defaultValue={mockTherapist.specialization}
+                defaultValue={therapist?.specialization ?? ""}
               />
             </div>
           </div>
@@ -63,14 +67,14 @@ export default function SettingsPage() {
             <Label htmlFor="practice">Practice name</Label>
             <Input
               id="practice"
-              defaultValue={mockTherapist.practiceName ?? ""}
+              defaultValue={therapist?.practiceName ?? ""}
             />
           </div>
           <Button>Save changes</Button>
         </CardContent>
       </Card>
 
-      {/* Pipeline Status */}
+      {/* pipeline status */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Pipeline Status</CardTitle>
@@ -93,7 +97,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Vector Store</p>
               <p className="text-xs text-muted-foreground">
-                MongoDB Atlas — rag_vectors collection
+                MongoDB Atlas - rag_vectors collection
               </p>
             </div>
             <Badge variant="secondary">Connected</Badge>
@@ -113,7 +117,7 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Danger Zone */}
+      {/* danger zone */}
       <Card className="border-destructive/30">
         <CardHeader>
           <CardTitle className="text-sm text-destructive">

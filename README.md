@@ -56,16 +56,17 @@ CalmAI/
 │
 ├── frontend/               # Web application (ACTIVE)
 │   ├── src/
-│   │   ├── app/            #   Next.js App Router (14 routes)
+│   │   ├── app/            #   Next.js App Router (15 routes)
 │   │   │   ├── page.tsx            # Landing page
 │   │   │   ├── login/              # Login page
-│   │   │   ├── signup/             # 2-step signup (role selection → form)
-│   │   │   ├── dashboard/          # Therapist dashboard (6 sub-routes)
-│   │   │   │   ├── page.tsx        #   Overview — stats, patient list, analytics, RAG panel
-│   │   │   │   ├── patients/       #   Patient grid with search
+│   │   │   ├── signup/             # 2-step signup (role selection → form, invite code for patients)
+│   │   │   ├── dashboard/          # Therapist dashboard (7 sub-routes)
+│   │   │   │   ├── page.tsx        #   Overview - stats, patient list, analytics, RAG panel
+│   │   │   │   ├── patients/       #   Patient grid with search + invite code dialog
+│   │   │   │   ├── patients/[id]/  #   Patient profile - journal timeline, analytics, charts
 │   │   │   │   ├── conversations/  #   Conversation explorer with topic/severity
 │   │   │   │   ├── analytics/      #   Bias reports & distribution charts
-│   │   │   │   ├── search/         #   RAG search with generated answers
+│   │   │   │   ├── search/         #   RAG chat assistant with conversation history + markdown
 │   │   │   │   └── settings/       #   Profile & pipeline status
 │   │   │   └── journal/            # Patient journal (4 sub-routes)
 │   │   │       ├── page.tsx        #   Entry composer, mood selector, timeline
@@ -73,7 +74,7 @@ CalmAI/
 │   │   │       ├── prompts/        #   Therapist prompts & responses
 │   │   │       └── settings/       #   Patient profile & privacy
 │   │   ├── components/ui/  #   shadcn/ui components (20+)
-│   │   ├── lib/            #   Utilities (cn) and mock data
+│   │   ├── lib/            #   API client, auth context, utilities
 │   │   └── types/          #   TypeScript domain types
 │   ├── vitest.config.ts    #   Vitest configuration (jsdom, React)
 │   └── package.json
@@ -82,10 +83,12 @@ CalmAI/
 │                           #   BERTopic for topic modeling
 │                           #   Fine-tuned embedding model
 │
-├── backend/                # API server (PLANNED)
-│                           #   FastAPI REST API
-│                           #   RAG retrieval endpoints
-│                           #   Authentication and authorization
+├── backend/                # API server (ACTIVE)
+│   ├── app/                #   FastAPI app (main, config, dependencies, seed)
+│   │   ├── models/         #   Pydantic schemas (user, journal, conversation, analytics, dashboard, invite, rag)
+│   │   ├── routers/        #   7 routers: auth, patients, journals, conversations, analytics, dashboard, search
+│   │   └── services/       #   db (Motor), auth_service (JWT/bcrypt), rag_service (LangChain)
+│   └── tests/              #   108 pytest tests across 10 files
 │
 ├── docs/                   # Project documentation
 ├── assets/                 # Static assets
@@ -143,6 +146,18 @@ cd data-pipeline
 dvc pull
 ```
 
+### Run the Backend
+
+```bash
+cd backend
+pip install -r requirements.txt
+
+# create .env with MONGODB_URI, MONGODB_DATABASE, JWT_SECRET, GEMINI_API_KEY, etc.
+python -m app.seed                # Seed therapist (dr.chen@calmai.com) + 10 patients
+uvicorn app.main:app --reload     # Start server at http://localhost:8000
+# API docs at http://localhost:8000/docs
+```
+
 ### Run the Frontend
 
 ```bash
@@ -160,9 +175,14 @@ cd data-pipeline
 pytest tests/ -v              # 205 tests
 pytest tests/ -v --cov        # With coverage
 
+# Backend tests
+cd backend
+pytest tests/ -v              # 108 tests
+pytest tests/ -v --cov        # With coverage
+
 # Frontend tests
 cd frontend
-npm test                      # 127 Vitest tests (17 test files)
+npm test                      # 144 Vitest tests (18 test files)
 npm run test:watch            # Watch mode
 npm run test:coverage         # With coverage report
 ```
@@ -192,26 +212,36 @@ See [data-pipeline/README.md](data-pipeline/README.md) for comprehensive documen
 - **Fine-tuned embedding model** to replace `all-MiniLM-L6-v2` for domain-specific retrieval
 - Patient analytics and trend detection
 
-### Backend (Planned)
+### Backend (Active)
 
-- FastAPI REST API
-- RAG retrieval endpoints with source citations
-- Patient/therapist authentication
-- Journal CRUD operations
+FastAPI REST API with 17 endpoints, JWT auth, role-based access, and LangChain RAG.
+
+| Area | Description |
+|---|---|
+| **Auth** | Signup (invite code for patients), login, token refresh, profile retrieval |
+| **Patients** | List, get by ID, generate invite codes, list invite codes |
+| **Journals** | List (role-aware), create (writes to staging for Airflow DAG 2) |
+| **Conversations** | Paginated list with topic/severity/search filters |
+| **Analytics** | Per-patient theme distribution, frequency, date range |
+| **Dashboard** | Aggregate stats, mood trend data |
+| **RAG Search** | Chat-style assistant with conversation history, vector search + Gemini LLM |
+
+See [backend/README.md](backend/README.md) for full API reference.
 
 ### Frontend (Active)
 
-The frontend is a fully built Next.js 16 application with 14 routes, dark theme, and 127 Vitest tests.
+Next.js 16 application with 15 routes, dark theme, and 144 Vitest tests.
 
 | Area | Routes | Description |
 |---|---|---|
 | **Landing** | `/` | Hero, feature cards, stats, CTA |
-| **Auth** | `/login`, `/signup` | Clean login form; 2-step signup with role selection (therapist/patient) |
+| **Auth** | `/login`, `/signup` | Clean login form; 2-step signup with role selection (therapist/patient, invite code required for patients) |
 | **Therapist Dashboard** | `/dashboard` | Overview with stat cards, patient list, per-patient analytics, mood trends, RAG assistant panel |
-| | `/dashboard/patients` | Patient grid with search, analytics badges, onboarding dates |
+| | `/dashboard/patients` | Patient grid with search, analytics badges, invite code dialog for onboarding |
+| | `/dashboard/patients/[id]` | Patient profile - journal timeline with search/filter/sort/pagination, analytics sidebar with charts |
 | | `/dashboard/conversations` | Conversation explorer with topic/severity badges, tab filtering |
-| | `/dashboard/analytics` | Bias & distribution reports — topic, severity, theme, temporal, patient distributions |
-| | `/dashboard/search` | RAG search with patient/source filters, suggestion chips, generated answers with citations |
+| | `/dashboard/analytics` | Bias & distribution reports - topic, severity, theme, temporal, patient distributions |
+| | `/dashboard/search` | RAG chat assistant - conversation history, markdown rendering, split source display, turn limits |
 | | `/dashboard/settings` | Therapist profile, pipeline status, embedding model info |
 | **Patient Journal** | `/journal` | Entry composer with mood selector (1–5), word count, timeline with theme badges |
 | | `/journal/insights` | Analytics — theme distribution bars, monthly frequency chart, disclaimer |
@@ -219,23 +249,27 @@ The frontend is a fully built Next.js 16 application with 14 routes, dark theme,
 | | `/journal/settings` | Patient profile, linked therapist, privacy notice |
 
 **Key design decisions:**
-- Dark zinc theme via shadcn/ui (20+ components)
+- Dark zinc theme via shadcn/ui (20+ components including Dialog for invite codes)
 - Collapsible sidebar for therapist dashboard, top nav for patient journal
-- Mock data layer (`src/lib/mock-data.ts`) aligned with MongoDB schema from the data pipeline
-- TypeScript domain types (`src/types/index.ts`) matching pipeline collections
+- API client (`src/lib/api.ts`) with typed fetch wrappers for all backend endpoints
+- Auth context (`src/lib/auth-context.tsx`) with JWT token management, role-based redirect
+- TypeScript domain types (`src/types/index.ts`) matching backend models
 
 ## Tech Stack
 
 | Layer | Technologies |
 |---|---|
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Recharts, Lucide Icons |
-| Frontend Testing | Vitest 4, React Testing Library, jsdom (127 tests across 17 files) |
+| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Recharts, Lucide Icons, react-markdown |
+| Frontend Testing | Vitest 4, React Testing Library, jsdom (144 tests across 18 files) |
+| Backend | FastAPI, Motor (async MongoDB), python-jose (JWT), passlib (bcrypt), pydantic-settings |
+| Backend Testing | pytest, pytest-asyncio, httpx (108 tests across 10 files) |
+| RAG | LangChain (langchain-google-genai, langchain-huggingface, langchain-mongodb), sentence-transformers |
 | Data Pipeline | Python, Pandas, NumPy, Apache Airflow, Docker Compose |
 | ML/Embedding | Sentence-Transformers, HuggingFace Datasets |
 | LLM | Google Gemini API (`gemini-2.5-flash`) (Temporary for now, will be upgraded later)|
 | Storage | MongoDB Atlas (vector search + raw collections) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Pipeline Testing | pytest (199 tests, mocked external services) |
+| Pipeline Testing | pytest (205 tests, mocked external services) |
 | CI/CD | Docker, DVC |
 
 ## Contributing
@@ -247,6 +281,7 @@ The frontend is a fully built Next.js 16 application with 14 routes, dark theme,
 2. Make your changes and ensure tests pass:
    ```bash
    cd data-pipeline && pytest tests/ -v
+   cd backend && pytest tests/ -v
    cd frontend && npm test
    ```
 3. Commit and push:

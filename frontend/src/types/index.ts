@@ -135,12 +135,19 @@ export interface TrendDataPoint {
   label?: string;
 }
 
-// rag / search
+// rag assistant
+
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
 
 export interface RAGQuery {
   query: string;
   patientId?: string;
   topK?: number;
+  sourceType?: string;
+  conversationHistory?: ConversationMessage[];
 }
 
 export interface RAGResult {

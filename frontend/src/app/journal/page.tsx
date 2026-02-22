@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Card,
   CardContent,
@@ -12,24 +12,21 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   BookOpen,
   Send,
-  Calendar,
   Clock,
-  Hash,
   Sparkles,
   Loader2,
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-import { getJournalsForPatient, mockMoodTrend } from "@/lib/mock-data";
-import type { JournalEntry, MoodScore } from "@/types";
+import { fetchJournals, fetchMoodTrend, submitJournal } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import type { JournalEntry, MoodScore, TrendDataPoint, Patient } from "@/types";
 
-const patientId = "p-001"; // Mock: logged-in patient
-const journals = getJournalsForPatient(patientId);
-
-/* mood selector */
+// mood selector
 
 const moodLabels: Record<MoodScore, { emoji: string; label: string }> = {
   1: { emoji: "😔", label: "Very Low" },
@@ -70,20 +67,18 @@ function MoodSelector({
   );
 }
 
-/* journal entry card */
+// journal entry card
 
 function JournalEntryCard({ entry }: { entry: JournalEntry }) {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <div className="group relative flex gap-4">
-      {/* Timeline dot & line */}
+      {/* timeline dot & line */}
       <div className="flex flex-col items-center pt-1">
         <div className="h-2.5 w-2.5 rounded-full border-2 border-foreground bg-background" />
         <div className="flex-1 border-l border-dashed border-muted-foreground/30" />
       </div>
 
-      {/* Content */}
+      {/* content */}
       <div className="flex-1 pb-8">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">
@@ -95,7 +90,7 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
           </span>
           {entry.mood && (
             <span className="text-base" title={`Mood: ${entry.mood}/5`}>
-              {moodLabels[entry.mood].emoji}
+              {moodLabels[entry.mood as MoodScore]?.emoji}
             </span>
           )}
         </div>
@@ -128,32 +123,84 @@ function JournalEntryCard({ entry }: { entry: JournalEntry }) {
   );
 }
 
-/* main page */
+// main page
 
 export default function JournalPage() {
+  const { user } = useAuth();
+  const patient = user as Patient | null;
+
+  const [journals, setJournals] = useState<JournalEntry[]>([]);
+  const [moodTrend, setMoodTrend] = useState<TrendDataPoint[]>([]);
+  const [loading, setLoading] = useState(true);
   const [content, setContent] = useState("");
   const [mood, setMood] = useState<MoodScore | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showAllEntries, setShowAllEntries] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
 
   const wordCount = content.trim().split(/\s+/).filter(Boolean).length;
   const displayedEntries = showAllEntries ? journals : journals.slice(0, 5);
 
+  const loadData = useCallback(async () => {
+    if (!patient?.id) return;
+    try {
+      const [journalData, moodData] = await Promise.all([
+        fetchJournals({ patientId: patient.id }),
+        fetchMoodTrend(patient.id, 14).catch(() => []),
+      ]);
+      setJournals(journalData);
+      setMoodTrend(moodData);
+    } catch (err) {
+      console.error("failed to load journal data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [patient?.id]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
   const handleSubmit = async () => {
     if (!content.trim()) return;
     setIsSubmitting(true);
-    // simulate submission
-    await new Promise((r) => setTimeout(r, 1200));
-    setContent("");
-    setMood(null);
-    setIsSubmitting(false);
+    setSubmitMessage(null);
+
+    try {
+      await submitJournal(content, mood ?? undefined);
+      setContent("");
+      setMood(null);
+      setSubmitMessage("Entry saved successfully!");
+      // reload journals
+      await loadData();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to save entry";
+      setSubmitMessage(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
+        <div className="space-y-8">
+          <Skeleton className="h-64" />
+          <Skeleton className="h-48" />
+        </div>
+        <div className="space-y-6">
+          <Skeleton className="h-32" />
+          <Skeleton className="h-48" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-8 lg:grid-cols-[1fr_320px]">
       {/* main column */}
       <div className="space-y-8">
-        {/* New Entry */}
+        {/* new entry */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
@@ -174,6 +221,12 @@ export default function JournalPage() {
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />
+
+            {submitMessage && (
+              <p className={`text-sm ${submitMessage.includes("success") ? "text-emerald-500" : "text-destructive"}`}>
+                {submitMessage}
+              </p>
+            )}
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
@@ -200,7 +253,7 @@ export default function JournalPage() {
           </CardContent>
         </Card>
 
-        {/* Timeline */}
+        {/* timeline */}
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-muted-foreground" />
@@ -241,7 +294,7 @@ export default function JournalPage() {
 
       {/* sidebar */}
       <div className="space-y-6">
-        {/* Mood Trend Mini */}
+        {/* mood trend mini */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium">
@@ -249,30 +302,38 @@ export default function JournalPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex items-end gap-1.5">
-              {mockMoodTrend.slice(-7).map((point, i) => {
-                const height = (point.value / 5) * 100;
-                return (
-                  <div key={i} className="group relative flex-1">
-                    <div
-                      className="w-full rounded-sm bg-foreground/20 transition-colors group-hover:bg-foreground/40"
-                      style={{ height: `${height}%`, minHeight: 4 }}
-                    />
-                    <div className="absolute -top-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-0.5 text-[10px] text-background group-hover:block">
-                      {point.label}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
-              <span>7 days ago</span>
-              <span>Today</span>
-            </div>
+            {moodTrend.length > 0 ? (
+              <>
+                <div className="flex items-end gap-1.5">
+                  {moodTrend.slice(-7).map((point, i) => {
+                    const height = (point.value / 5) * 100;
+                    return (
+                      <div key={i} className="group relative flex-1">
+                        <div
+                          className="w-full rounded-sm bg-foreground/20 transition-colors group-hover:bg-foreground/40"
+                          style={{ height: `${height}%`, minHeight: 4 }}
+                        />
+                        <div className="absolute -top-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-0.5 text-[10px] text-background group-hover:block">
+                          {point.label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
+                  <span>7 days ago</span>
+                  <span>Today</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No mood data yet. Start journaling!
+              </p>
+            )}
           </CardContent>
         </Card>
 
-        {/* Quick Stats */}
+        {/* quick stats */}
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium">Your Stats</CardTitle>
@@ -300,21 +361,18 @@ export default function JournalPage() {
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Avg. words</span>
               <span className="font-medium">
-                {Math.round(
-                  journals.reduce((acc, j) => acc + j.wordCount, 0) /
-                    journals.length
-                )}
+                {journals.length > 0
+                  ? Math.round(
+                      journals.reduce((acc, j) => acc + j.wordCount, 0) /
+                        journals.length
+                    )
+                  : 0}
               </span>
-            </div>
-            <Separator />
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Current streak</span>
-              <span className="font-medium">3 days</span>
             </div>
           </CardContent>
         </Card>
 
-        {/* Therapist Prompt Placeholder */}
+        {/* therapist prompt placeholder */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
@@ -331,7 +389,7 @@ export default function JournalPage() {
                 noticed your anxiety and how you responded to it.&rdquo;
               </p>
               <p className="mt-2 text-[10px] text-muted-foreground">
-                — Dr. Sarah Chen · Feb 18, 2026
+                - Your Therapist
               </p>
             </div>
           </CardContent>
