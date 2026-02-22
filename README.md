@@ -121,9 +121,10 @@ python -m venv .venv
 pip install -r data-pipeline/requirements.txt
 
 # Configure
-cd data-pipeline
 cp .env.example .env
 # Edit .env with your API keys and MongoDB URI
+cp .env.example data-pipeline/.env
+# Edit data-pipeline/.env (adds Airflow, Postgres, SMTP settings for Docker)
 
 # Option A: Run locally
 python run_pipeline.py
@@ -152,7 +153,7 @@ dvc pull
 cd backend
 pip install -r requirements.txt
 
-# create .env with MONGODB_URI, MONGODB_DATABASE, JWT_SECRET, GEMINI_API_KEY, etc.
+# configure (root .env must exist with MONGODB_URI, JWT_SECRET, GEMINI_API_KEY)
 python -m app.seed                # Seed therapist (dr.chen@calmai.com) + 10 patients
 uvicorn app.main:app --reload     # Start server at http://localhost:8000
 # API docs at http://localhost:8000/docs

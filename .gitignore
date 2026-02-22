@@ -15,7 +15,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -217,6 +217,7 @@ __marimo__/
 !.env.example
 !.dvc
 !.dvcignore
+!.gitignore
 
 # DVC cache
 .dvc/cache
@@ -231,4 +232,3 @@ data-pipeline/data/embeddings/**/*.parquet
 data-pipeline/reports/bias/*.json
 data-pipeline/reports/bias/*.png
 data-pipeline/reports/schema/*.json
-backend/pytest.ini
