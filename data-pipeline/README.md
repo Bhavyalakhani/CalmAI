@@ -80,7 +80,7 @@ External Services:
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (218 tests, 13 test files) |
+| Testing | pytest (205 tests, 13 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -290,7 +290,7 @@ data-pipeline/
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 218 tests across 13 files
+├── tests/                           # 205 tests across 13 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
@@ -568,7 +568,7 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (218 tests)
+### Test Summary (205 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
@@ -584,7 +584,7 @@ pytest tests/test_embedding.py -v
 | `test_embedding.py` | 19 | Embedding generation, batch processing, incoming |
 | `test_storage.py` | 24 | MongoDB CRUD, batch inserts, indexes, stats |
 | `test_analytics.py` | 5 | Patient theme classification, analytics computation |
-| `test_incoming_pipeline.py` | 22 | Validation, staging, analytics, DAG callable tests |
+| `test_incoming_pipeline.py` | 19 | Validation, staging, analytics |
 | `conftest.py` | - | Shared fixtures, mock settings, sample DataFrames |
 
 All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers) are mocked in tests.
@@ -637,7 +637,7 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Vector search returns results via Atlas
 - [ ] Bias reports in `reports/bias/` with visualization PNGs
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
-- [ ] All 218 tests passing (`pytest tests/ -v`)
+- [ ] All 205 tests passing (`pytest tests/ -v`)
 
 ---
 

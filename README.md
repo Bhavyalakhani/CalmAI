@@ -45,7 +45,7 @@ CalmAI/
 ├── data-pipeline/          # Data acquisition, processing, and storage (ACTIVE)
 │   ├── dags/               #   Airflow DAG definitions (2 DAGs)
 │   ├── src/                #   Pipeline source code (9 modules)
-│   ├── tests/              #   199 pytest tests
+│   ├── tests/              #   205 pytest tests
 │   ├── configs/            #   Configuration and patient profiles
 │   ├── data/               #   Raw, processed, and embedded data
 │   ├── reports/            #   Bias and schema validation reports
@@ -157,7 +157,7 @@ npm run build                 # Production build
 ```bash
 # Data pipeline tests
 cd data-pipeline
-pytest tests/ -v              # 199 tests
+pytest tests/ -v              # 205 tests
 pytest tests/ -v --cov        # With coverage
 
 # Frontend tests
