@@ -8,6 +8,7 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+AGENTS.md
 build/
 develop-eggs/
 dist/

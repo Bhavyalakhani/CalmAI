@@ -1,0 +1,174 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import {
+  Brain,
+  LayoutDashboard,
+  Users,
+  MessageSquare,
+  BarChart3,
+  Search,
+  Settings,
+  LogOut,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useState } from "react";
+import { cn } from "@/lib/utils";
+import { mockTherapist } from "@/lib/mock-data";
+
+const navItems = [
+  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/patients", label: "Patients", icon: Users },
+  { href: "/dashboard/conversations", label: "Conversations", icon: MessageSquare },
+  { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/dashboard/search", label: "RAG Search", icon: Search },
+];
+
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-background">
+      {/* sidebar */}
+      <aside
+        className={cn(
+          "flex flex-col border-r bg-card transition-all duration-200",
+          collapsed ? "w-16" : "w-64"
+        )}
+      >
+        {/* Logo */}
+        <div className="flex h-16 items-center gap-2 border-b px-4">
+          <Brain className="h-6 w-6 shrink-0" />
+          {!collapsed && (
+            <span className="text-lg font-bold tracking-tight">CalmAI</span>
+          )}
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
+          {navItems.map((item) => {
+            const isActive =
+              pathname === item.href ||
+              (item.href !== "/dashboard" && pathname.startsWith(item.href));
+            return (
+              <Tooltip key={item.href} delayDuration={0}>
+                <TooltipTrigger asChild>
+                  <Link
+                    href={item.href}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      isActive
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    )}
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {!collapsed && <span>{item.label}</span>}
+                  </Link>
+                </TooltipTrigger>
+                {collapsed && (
+                  <TooltipContent side="right">{item.label}</TooltipContent>
+                )}
+              </Tooltip>
+            );
+          })}
+        </nav>
+
+        <Separator />
+
+        {/* Bottom Section */}
+        <div className="space-y-1 px-2 py-3">
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <Link
+                href="/dashboard/settings"
+                className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <Settings className="h-4 w-4 shrink-0" />
+                {!collapsed && <span>Settings</span>}
+              </Link>
+            </TooltipTrigger>
+            {collapsed && (
+              <TooltipContent side="right">Settings</TooltipContent>
+            )}
+          </Tooltip>
+        </div>
+
+        <Separator />
+
+        {/* Profile + Collapse */}
+        <div className="flex items-center justify-between border-t p-3">
+          <div className="flex items-center gap-3 overflow-hidden">
+            <Avatar className="h-8 w-8 shrink-0">
+              <AvatarFallback className="text-xs">SC</AvatarFallback>
+            </Avatar>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {mockTherapist.name}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {mockTherapist.specialization}
+                </p>
+              </div>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            {collapsed ? (
+              <ChevronRight className="h-4 w-4" />
+            ) : (
+              <ChevronLeft className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      </aside>
+
+      {/* main content */}
+      <main className="flex flex-1 flex-col overflow-y-auto">
+        {/* Top Bar */}
+        <header className="flex h-16 items-center justify-between border-b px-6">
+          <div>
+            <h1 className="text-lg font-semibold">
+              {navItems.find(
+                (n) =>
+                  pathname === n.href ||
+                  (n.href !== "/dashboard" && pathname.startsWith(n.href))
+              )?.label ?? "Dashboard"}
+            </h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/login">
+                <LogOut className="mr-2 h-4 w-4" />
+                Sign out
+              </Link>
+            </Button>
+          </div>
+        </header>
+
+        {/* Page Content */}
+        <div className="flex-1 p-6">{children}</div>
+      </main>
+    </div>
+  );
+}
