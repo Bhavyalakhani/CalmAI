@@ -29,8 +29,13 @@ export default function JournalLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const { user, isLoading, logout } = useAuth();
   const patient = user as Patient | null;
+
+  // block render until auth is resolved and role is verified
+  if (isLoading || !user || user.role !== "patient") {
+    return null;
+  }
 
   const initials = patient?.name
     ? patient.name
