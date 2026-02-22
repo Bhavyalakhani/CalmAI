@@ -99,7 +99,7 @@ export default function Home() {
             <FeatureCard
               icon={<BookOpen className="h-5 w-5" />}
               title="Patient Journaling"
-              description="Patients write entries, receive analytical insights, and respond to therapist-assigned prompts — all in one secure space."
+              description="Patients write entries, receive analytical insights, and respond to therapist-assigned prompts, all in one secure space."
             />
             <FeatureCard
               icon={<Brain className="h-5 w-5" />}
@@ -109,7 +109,7 @@ export default function Home() {
             <FeatureCard
               icon={<Shield className="h-5 w-5" />}
               title="Clinician-First Design"
-              description="No diagnoses, no treatment recommendations. CalmAI surfaces information — you make the clinical decisions."
+              description="No diagnoses, no treatment recommendations. CalmAI surfaces information - you make the clinical decisions."
             />
           </div>
         </section>

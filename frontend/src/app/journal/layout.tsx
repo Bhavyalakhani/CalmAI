@@ -13,9 +13,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
-import { mockPatients } from "@/lib/mock-data";
-
-const patient = mockPatients[0]!; // Mock: logged-in patient
+import { useAuth } from "@/lib/auth-context";
+import type { Patient } from "@/types";
 
 const navItems = [
   { href: "/journal", label: "Journal", icon: BookOpen },
@@ -30,6 +29,15 @@ export default function JournalLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const { user, logout } = useAuth();
+  const patient = user as Patient | null;
+
+  const initials = patient?.name
+    ? patient.name
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+    : "?";
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -70,14 +78,12 @@ export default function JournalLayout({
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Avatar className="h-7 w-7">
-                <AvatarFallback className="text-[10px]">AR</AvatarFallback>
+                <AvatarFallback className="text-[10px]">{initials}</AvatarFallback>
               </Avatar>
-              <span className="text-sm font-medium">{patient.name}</span>
+              <span className="text-sm font-medium">{patient?.name ?? "Patient"}</span>
             </div>
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">
-                <LogOut className="h-4 w-4" />
-              </Link>
+            <Button variant="ghost" size="sm" onClick={logout}>
+              <LogOut className="h-4 w-4" />
             </Button>
           </div>
         </div>

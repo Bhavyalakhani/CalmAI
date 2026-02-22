@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// Mock next/navigation
+// mock next/navigation
 const pushMock = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock, replace: vi.fn(), back: vi.fn(), prefetch: vi.fn(), refresh: vi.fn(), forward: vi.fn() }),
@@ -17,11 +17,27 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// mock auth context
+const loginMock = vi.fn();
+vi.mock("@/lib/auth-context", () => ({
+  useAuth: () => ({
+    user: null,
+    isLoading: false,
+    isAuthenticated: false,
+    login: loginMock,
+    signup: vi.fn(),
+    logout: vi.fn(),
+  }),
+  AuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 import LoginPage from "@/app/login/page";
 
 describe("Login page", () => {
   beforeEach(() => {
     pushMock.mockClear();
+    loginMock.mockClear();
+    loginMock.mockResolvedValue(undefined);
   });
 
   it("renders without crashing", () => {
@@ -60,6 +76,7 @@ describe("Login page", () => {
   });
 
   it("shows signing in state on submit", async () => {
+    loginMock.mockReturnValue(new Promise(() => {})); // never resolves
     const user = userEvent.setup();
     render(<LoginPage />);
 
@@ -70,19 +87,16 @@ describe("Login page", () => {
     expect(screen.getByText("Signing in...")).toBeInTheDocument();
   });
 
-  it("calls router.push after simulated login", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  it("calls login with email and password", async () => {
+    const user = userEvent.setup();
     render(<LoginPage />);
 
     await user.type(screen.getByLabelText("Email"), "test@test.com");
     await user.type(screen.getByLabelText("Password"), "password123");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    // Advance past the 800ms simulated delay
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(pushMock).toHaveBeenCalledWith("/dashboard");
-    vi.useRealTimers();
+    await waitFor(() => {
+      expect(loginMock).toHaveBeenCalledWith("test@test.com", "password123");
+    });
   });
 });

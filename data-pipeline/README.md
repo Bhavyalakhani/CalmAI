@@ -156,10 +156,13 @@ SMTP_MAIL_FROM=your-email@gmail.com
 2. Create a database user with read/write permissions
 3. Whitelist your IP (or use `0.0.0.0/0` for development)
 4. Copy the connection string to `MONGODB_URI` in `.env`
-5. Create a vector search index on the `rag_vectors` collection via the Atlas UI:
+5. The vector search index on `rag_vectors` is created automatically by `python src/storage/mongodb_client.py create-indexes`. Alternatively, create it manually via the Atlas UI:
+   - **Index name**: `vector_index`
+   - **Collection**: `rag_vectors`
    - **Field**: `embedding`
    - **Dimensions**: 384
    - **Similarity**: cosine
+   - **Filter fields**: `patient_id`, `doc_type`
 
 ---
 
@@ -543,7 +546,7 @@ dvc status
 
 ### Indexes
 
-- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id`
+- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id` + `vector_index` (Atlas vector search on `embedding`, 384 dims, cosine)
 - `conversations`: `conversation_id` (unique)
 - `journals`: `journal_id` (unique), `patient_id`, `therapist_id`
 - `incoming_journals`: `journal_id` (unique), `patient_id`, `is_processed`
@@ -551,7 +554,7 @@ dvc status
 
 ### Vector Search
 
-A vector search index must be created via the Atlas UI on `rag_vectors.embedding` with **cosine similarity** and **384 dimensions**.
+The vector search index (`vector_index`) is created automatically by `python src/storage/mongodb_client.py create-indexes` via `_ensure_vector_search_index()`. It uses cosine similarity on `rag_vectors.embedding` (384 dims) with filter fields for `patient_id` and `doc_type`. Can also be created manually via the Atlas UI.
 
 ---
 

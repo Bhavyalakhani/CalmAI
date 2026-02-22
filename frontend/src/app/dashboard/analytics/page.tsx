@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -9,21 +10,21 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   BarChart3,
   PieChart,
-  TrendingUp,
   AlertTriangle,
   Users,
-  Activity,
 } from "lucide-react";
 import {
-  mockPatients,
-  mockPatientAnalytics,
-  mockDashboardStats,
-} from "@/lib/mock-data";
+  fetchPatients,
+  fetchAnalytics,
+  fetchDashboardStats,
+} from "@/lib/api";
+import type { Patient, PatientAnalytics, DashboardStats } from "@/types";
 
-/* bias distribution bar */
+// bias distribution bar
 
 function DistributionBar({
   label,
@@ -66,17 +67,69 @@ function DistributionBar({
 }
 
 export default function AnalyticsPage() {
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [analyticsList, setAnalyticsList] = useState<PatientAnalytics[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const [patientsData, statsData] = await Promise.all([
+          fetchPatients(),
+          fetchDashboardStats(),
+        ]);
+        setPatients(patientsData);
+        setStats(statsData);
+
+        // load analytics for all patients
+        const results: PatientAnalytics[] = [];
+        await Promise.all(
+          patientsData.map(async (p) => {
+            try {
+              const a = await fetchAnalytics(p.id);
+              results.push(a);
+            } catch {
+              // skip patients without analytics
+            }
+          })
+        );
+        setAnalyticsList(results);
+      } catch (err) {
+        console.error("failed to load analytics data:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <Skeleton key={i} className="h-24" />
+          ))}
+        </div>
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
+
   // aggregate theme data across all patients
   const themeAgg: Record<string, number> = {};
   let totalThemeHits = 0;
-  for (const a of mockPatientAnalytics) {
+  for (const a of analyticsList) {
     for (const td of a.themeDistribution) {
       themeAgg[td.theme] = (themeAgg[td.theme] ?? 0) + td.count;
       totalThemeHits += td.count;
     }
   }
 
-  // conversation topics (mock)
+  // conversation topics (from bias report - static categories)
   const topicData = [
     { topic: "anxiety", count: 842, pct: 24.0 },
     { topic: "depression", count: 631, pct: 18.0 },
@@ -100,7 +153,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* header */}
       <div>
         <h2 className="text-lg font-semibold">Analytics & Bias Reports</h2>
         <p className="text-sm text-muted-foreground">
@@ -108,7 +161,7 @@ export default function AnalyticsPage() {
         </p>
       </div>
 
-      {/* Summary Cards */}
+      {/* summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -160,7 +213,9 @@ export default function AnalyticsPage() {
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">1</div>
+            <div className="text-2xl font-bold">
+              {analyticsList.filter((a) => a.totalEntries < 10).length}
+            </div>
             <p className="text-xs text-muted-foreground">
               Fewer than 10 entries
             </p>
@@ -168,7 +223,7 @@ export default function AnalyticsPage() {
         </Card>
       </div>
 
-      {/* Tabs */}
+      {/* tabs */}
       <Tabs defaultValue="conversations">
         <TabsList>
           <TabsTrigger value="conversations">Conversation Bias</TabsTrigger>
@@ -179,13 +234,14 @@ export default function AnalyticsPage() {
         {/* conversation bias */}
         <TabsContent value="conversations" className="mt-4 space-y-6">
           <div className="grid gap-6 lg:grid-cols-2">
-            {/* Topic Distribution */}
+            {/* topic distribution */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">Topic Distribution</CardTitle>
                 <CardDescription>
-                  Classification of {mockDashboardStats.totalConversations.toLocaleString()} conversations
-                  into 10 topics
+                  Classification of{" "}
+                  {(stats?.totalConversations ?? 0).toLocaleString()}{" "}
+                  conversations into 10 topics
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2.5">
@@ -194,14 +250,14 @@ export default function AnalyticsPage() {
                     key={t.topic}
                     label={t.topic}
                     value={t.count}
-                    total={mockDashboardStats.totalConversations}
+                    total={stats?.totalConversations ?? 3512}
                     flagged={t.pct < 3}
                   />
                 ))}
               </CardContent>
             </Card>
 
-            {/* Severity Distribution */}
+            {/* severity distribution */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">Severity Distribution</CardTitle>
@@ -215,16 +271,16 @@ export default function AnalyticsPage() {
                     key={s.level}
                     label={s.level}
                     value={s.count}
-                    total={mockDashboardStats.totalConversations}
+                    total={stats?.totalConversations ?? 3512}
                   />
                 ))}
 
                 <div className="mt-4 rounded-lg border border-dashed p-4">
                   <p className="text-xs text-muted-foreground">
                     <AlertTriangle className="mr-1 inline h-3 w-3" />
-                    Mitigation note: &quot;self_harm&quot; and &quot;substance&quot; topics are
-                    underrepresented (&lt;3%). Consider augmenting training data for
-                    these categories.
+                    Mitigation note: &quot;self_harm&quot; and
+                    &quot;substance&quot; topics are underrepresented (&lt;3%).
+                    Consider augmenting training data for these categories.
                   </p>
                 </div>
               </CardContent>
@@ -241,7 +297,7 @@ export default function AnalyticsPage() {
                   Journal Theme Distribution
                 </CardTitle>
                 <CardDescription>
-                  Aggregated across all {mockPatients.length} patients
+                  Aggregated across all {patients.length} patients
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2.5">
@@ -302,13 +358,14 @@ export default function AnalyticsPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {mockPatients.map((patient) => {
-                  const a = mockPatientAnalytics.find(
+                {patients.map((patient) => {
+                  const a = analyticsList.find(
                     (x) => x.patientId === patient.id
                   );
                   const entries = a?.totalEntries ?? 0;
                   const maxEntries = Math.max(
-                    ...mockPatientAnalytics.map((x) => x.totalEntries)
+                    ...analyticsList.map((x) => x.totalEntries),
+                    1
                   );
                   const isSparse = entries < 10;
 

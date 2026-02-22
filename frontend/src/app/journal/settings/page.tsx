@@ -12,11 +12,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { mockPatients } from "@/lib/mock-data";
-
-const patient = mockPatients[0]!;
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/lib/auth-context";
+import type { Patient } from "@/types";
 
 export default function JournalSettingsPage() {
+  const { user, isLoading } = useAuth();
+  const patient = user as Patient | null;
+
+  if (isLoading || !patient) {
+    return (
+      <div className="max-w-2xl space-y-6">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-64" />
+        <Skeleton className="h-48" />
+      </div>
+    );
+  }
   return (
     <div className="max-w-2xl space-y-6">
       <div>

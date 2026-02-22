@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import {
   Card,
   CardContent,
@@ -9,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   LineChart,
   TrendingUp,
@@ -16,11 +18,38 @@ import {
   Activity,
   Brain,
 } from "lucide-react";
-import { getAnalyticsForPatient, mockMoodTrend } from "@/lib/mock-data";
-
-const analytics = getAnalyticsForPatient("p-001");
+import { fetchAnalytics } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
+import type { PatientAnalytics, Patient } from "@/types";
 
 export default function InsightsPage() {
+  const { user } = useAuth();
+  const patient = user as Patient | null;
+  const [analytics, setAnalytics] = useState<PatientAnalytics | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!patient?.id) return;
+    fetchAnalytics(patient.id)
+      .then(setAnalytics)
+      .catch((err) => console.error("failed to load analytics:", err))
+      .finally(() => setLoading(false));
+  }, [patient?.id]);
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28" />
+          ))}
+        </div>
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
+
   if (!analytics) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -76,7 +105,7 @@ export default function InsightsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold capitalize">
-              {analytics.themeDistribution[0]?.theme ?? "—"}
+              {analytics.themeDistribution[0]?.theme ?? "-"}
             </div>
             <p className="text-xs text-muted-foreground">
               {analytics.themeDistribution[0]?.percentage ?? 0}% of entries

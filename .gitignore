@@ -231,3 +231,4 @@ data-pipeline/data/embeddings/**/*.parquet
 data-pipeline/reports/bias/*.json
 data-pipeline/reports/bias/*.png
 data-pipeline/reports/schema/*.json
+backend/pytest.ini
