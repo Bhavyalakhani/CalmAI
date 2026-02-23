@@ -260,30 +260,34 @@ class TestRagSearchWithHistory:
 
 
 class TestClassifyThemes:
-    """journal theme classification helper"""
+    """journal theme classification helper — tests model-unavailable path"""
 
-    def test_anxiety_detected(self):
+    def setup_method(self):
+        """reset topic model singleton to ensure no model path"""
+        import app.routers.journals as jmod
+        jmod._topic_inference = None
+        jmod._topic_inference_loaded = True  # skip loading attempt, force no-model path
+
+    def test_returns_unclassified_for_anxiety_text(self):
         themes = _classify_themes("I feel so anxious and worried about everything")
-        assert "anxiety" in themes
+        assert themes == ["unclassified"]
 
-    def test_depression_detected(self):
+    def test_returns_unclassified_for_depression_text(self):
         themes = _classify_themes("Feeling depressed and hopeless today")
-        assert "depression" in themes
+        assert themes == ["unclassified"]
 
-    def test_positive_detected(self):
+    def test_returns_unclassified_for_positive_text(self):
         themes = _classify_themes("I am so grateful and happy with my progress")
-        assert "positive" in themes
+        assert themes == ["unclassified"]
 
-    def test_multiple_themes(self):
+    def test_returns_unclassified_for_mixed_text(self):
         themes = _classify_themes("Anxious about work deadline but therapy helped with coping")
-        assert "anxiety" in themes
-        assert "work" in themes
-        assert "therapy" in themes
+        assert themes == ["unclassified"]
 
-    def test_unclassified_fallback(self):
+    def test_returns_unclassified_for_generic_text(self):
         themes = _classify_themes("The weather is nice outside today")
         assert themes == ["unclassified"]
 
-    def test_sleep_detected(self):
+    def test_returns_unclassified_for_sleep_text(self):
         themes = _classify_themes("My insomnia is getting worse, I can't sleep")
-        assert "sleep" in themes
+        assert themes == ["unclassified"]

@@ -10,6 +10,8 @@ sentence-transformers>=3.0.0
 pymongo>=4.6.0
 dvc>=3.0
 dvc-gs
+bertopic>=0.17.0
+mlflow>=3.0.0
 certifi
 urllib3
 pytest

@@ -1,6 +1,7 @@
 # main airflow dag for the calmai data pipeline
-# 13 tasks: acquisition -> preprocessing -> validation -> bias -> embedding -> mongodb -> email
+# tasks: acquisition -> preprocessing -> validation -> embedding -> model training -> bias -> analytics -> mongodb -> email
 # uses branchpythonoperator for validation gate and emptyoperators for sync points
+# trains bertopic models for journals, conversations, and severity after embedding
 
 from datetime import datetime, timedelta, timezone
 from airflow import DAG
@@ -122,13 +123,13 @@ def validate_data_callable(**context):
         logger.error(f"validate_data failed: {e}")
         raise
 
-# validation gate — routes to bias tasks on pass or halts on fail
+# validation gate — routes to embed tasks on pass or halts on fail
 def validation_branch_callable(**context):
     ti = context["ti"]
     passed = ti.xcom_pull(task_ids="validate_data", key="validation_passed")
     if passed:
-        logger.info("Validation passed -> bias analysis")
-        return ["bias_conversations", "bias_journals"]
+        logger.info("Validation passed -> embedding")
+        return ["embed_conversations", "embed_journals"]
 
     logger.warning("Validation failed -> stopping pipeline")
     return "validation_failed"
@@ -141,6 +142,190 @@ def validation_failed_callable(**context):
     raise AirflowFailException(
         f"Pipeline halted — validation failure: {details}"
     )
+
+def embed_conversations_callable(**context):
+    t0 = time.time()
+    try:
+        from embedding.embedder import embed_conversations
+        output_path = embed_conversations(force=True)
+        context["ti"].xcom_push(
+            key="conversations_embedded_path", value=str(output_path)
+        )
+        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(f"Conversations embedded: {output_path}")
+    except Exception as e:
+        logger.error(f"embed_conversations failed: {e}")
+        raise
+
+def embed_journals_callable(**context):
+    t0 = time.time()
+    try:
+        from embedding.embedder import embed_journals
+        output_path = embed_journals(force=True)
+        context["ti"].xcom_push(key="journals_embedded_path", value=str(output_path))
+        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(f"Journals embedded: {output_path}")
+    except Exception as e:
+        logger.error(f"embed_journals failed: {e}")
+        raise
+
+# topic model training
+
+def train_journal_model_callable(**context):
+    t0 = time.time()
+    try:
+        import pandas as pd
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="journals")
+        trainer = TopicModelTrainer(cfg)
+
+        journals_path = context["ti"].xcom_pull(
+            task_ids="embed_journals", key="journals_embedded_path"
+        )
+
+        if journals_path:
+            df = pd.read_parquet(journals_path)
+        else:
+            import config
+            df = pd.read_parquet(
+                config.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+            )
+
+        docs, timestamps = trainer.prepare_journal_docs(df)
+
+        # use pre-calculated embeddings from the parquet if available
+        import numpy as np
+        embeddings = None
+        if "embedding" in df.columns:
+            embeddings = np.array(df["embedding"].tolist())
+
+        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps)
+        model_path = trainer.save_model()
+
+        # validate model quality
+        validator = TopicModelValidator()
+        validation_report = validator.validate(result)
+        validator.save_report(validation_report)
+
+        context["ti"].xcom_push(key="journal_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="journal_topics", value=result.get("num_topics", 0))
+        context["ti"].xcom_push(key="journal_outlier_ratio", value=result.get("outlier_ratio", 0))
+        context["ti"].xcom_push(key="journal_model_status", value=validation_report.get("status", "unknown"))
+        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(
+            f"Journal topic model trained: {result['num_topics']} topics, "
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+        )
+    except Exception as e:
+        logger.error(f"train_journal_model failed: {e}")
+        raise
+
+def train_conversation_model_callable(**context):
+    t0 = time.time()
+    try:
+        import pandas as pd
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="conversations")
+        trainer = TopicModelTrainer(cfg)
+
+        conv_path = context["ti"].xcom_pull(
+            task_ids="embed_conversations", key="conversations_embedded_path"
+        )
+
+        if conv_path:
+            df = pd.read_parquet(conv_path)
+        else:
+            import config
+            df = pd.read_parquet(
+                config.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+            )
+
+        docs, _ = trainer.prepare_conversation_docs(df)
+
+        # use pre-calculated embeddings from the parquet if available
+        import numpy as np
+        embeddings = None
+        if "embedding" in df.columns:
+            embeddings = np.array(df["embedding"].tolist())
+
+        result = trainer.train(docs, embeddings=embeddings)
+        model_path = trainer.save_model()
+
+        # validate model quality
+        validator = TopicModelValidator()
+        validation_report = validator.validate(result)
+        validator.save_report(validation_report)
+
+        context["ti"].xcom_push(key="conversation_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="conversation_topics", value=result.get("num_topics", 0))
+        context["ti"].xcom_push(key="conversation_outlier_ratio", value=result.get("outlier_ratio", 0))
+        context["ti"].xcom_push(key="conversation_model_status", value=validation_report.get("status", "unknown"))
+        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(
+            f"Conversation topic model trained: {result['num_topics']} topics, "
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+        )
+    except Exception as e:
+        logger.error(f"train_conversation_model failed: {e}")
+        raise
+
+def train_severity_model_callable(**context):
+    t0 = time.time()
+    try:
+        import pandas as pd
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="severity")
+        trainer = TopicModelTrainer(cfg)
+
+        conv_path = context["ti"].xcom_pull(
+            task_ids="embed_conversations", key="conversations_embedded_path"
+        )
+
+        if conv_path:
+            df = pd.read_parquet(conv_path)
+        else:
+            import config
+            df = pd.read_parquet(
+                config.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+            )
+
+        docs, _ = trainer.prepare_conversation_docs(df)
+
+        import numpy as np
+        embeddings = None
+        if "embedding" in df.columns:
+            embeddings = np.array(df["embedding"].tolist())
+
+        result = trainer.train(docs, embeddings=embeddings)
+        model_path = trainer.save_model()
+
+        validator = TopicModelValidator()
+        validation_report = validator.validate(result)
+        validator.save_report(validation_report)
+
+        context["ti"].xcom_push(key="severity_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="severity_clusters", value=result.get("num_topics", 0))
+        context["ti"].xcom_push(key="severity_outlier_ratio", value=result.get("outlier_ratio", 0))
+        context["ti"].xcom_push(key="severity_model_status", value=validation_report.get("status", "unknown"))
+        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(
+            f"Severity model trained: {result['num_topics']} clusters, "
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+        )
+    except Exception as e:
+        logger.error(f"train_severity_model failed: {e}")
+        raise
+
+# bias analysis (runs after training so it can use the trained models)
 
 def bias_conversations_callable(**context):
     t0 = time.time()
@@ -181,30 +366,41 @@ def bias_journals_callable(**context):
         logger.error(f"bias_journals failed: {e}")
         raise
 
-def embed_conversations_callable(**context):
-    t0 = time.time()
-    try:
-        from embedding.embedder import embed_conversations
-        output_path = embed_conversations(force=True)
-        context["ti"].xcom_push(
-            key="conversations_embedded_path", value=str(output_path)
-        )
-        context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
-        logger.info(f"Conversations embedded: {output_path}")
-    except Exception as e:
-        logger.error(f"embed_conversations failed: {e}")
-        raise
+# patient analytics (runs after bias, uses trained model)
 
-def embed_journals_callable(**context):
+def compute_patient_analytics_callable(**context):
     t0 = time.time()
     try:
-        from embedding.embedder import embed_journals
-        output_path = embed_journals(force=True)
-        context["ti"].xcom_push(key="journals_embedded_path", value=str(output_path))
+        import pandas as pd
+        from analytics.patient_analytics import PatientAnalytics
+        from storage.mongodb_client import MongoDBClient
+        import config
+
+        pa = PatientAnalytics()
+        df = pd.read_parquet(
+            config.settings.PROCESSED_DATA_DIR / "journals" / "processed_journals.parquet"
+        )
+
+        patient_ids = df["patient_id"].unique().tolist()
+
+        # upsert to mongodb
+        client = MongoDBClient()
+        try:
+            client.connect()
+            for patient_id in patient_ids:
+                patient_df = df[df["patient_id"] == patient_id]
+                journals = patient_df.to_dict(orient="records")
+                analytics = pa.compute_patient_analytics(journals)
+                client.upsert_patient_analytics(str(patient_id), analytics)
+            logger.info(f"Upserted analytics for {len(patient_ids)} patients")
+        finally:
+            client.close()
+
+        context["ti"].xcom_push(key="patients_analyzed", value=len(patient_ids))
         context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
-        logger.info(f"Journals embedded: {output_path}")
+        logger.info(f"Patient analytics complete for {len(patient_ids)} patients")
     except Exception as e:
-        logger.error(f"embed_journals failed: {e}")
+        logger.error(f"compute_patient_analytics failed: {e}")
         raise
 
 def store_to_mongodb_callable(**context):
@@ -218,6 +414,15 @@ def store_to_mongodb_callable(**context):
             client.create_indexes()
             conv_result = client.store_conversations_from_parquet()
             jour_result = client.store_journals_from_parquet()
+
+            # classify conversations with bertopic topics + bertopic severity
+            try:
+                classify_result = client.classify_and_update_conversations()
+                logger.info(f"Conversation classification: {classify_result}")
+                ti.xcom_push(key="classify_result", value=classify_result)
+            except Exception as ce:
+                logger.warning(f"Conversation classification failed (non-fatal): {ce}")
+
             stats = client.get_collection_stats()
 
             run_id = ti.xcom_pull(task_ids="start", key="run_id") or "unknown"
@@ -228,10 +433,14 @@ def store_to_mongodb_callable(**context):
                 "preprocess_conversations",
                 "preprocess_journals",
                 "validate_data",
-                "bias_conversations",
-                "bias_journals",
                 "embed_conversations",
                 "embed_journals",
+                "train_journal_model",
+                "train_conversation_model",
+                "train_severity_model",
+                "bias_conversations",
+                "bias_journals",
+                "compute_patient_analytics",
             ]
             metrics = {}
             for tid in task_ids:
@@ -276,7 +485,7 @@ with DAG(
     default_args=default_args,
     description=(
         "CalmAI data pipeline: acquisition, preprocessing, validation, "
-        "bias analysis, embedding and MongoDB storage"
+        "embedding, topic model training, bias analysis, patient analytics and MongoDB storage"
     ),
     schedule=None,
     start_date=datetime(2025, 1, 1),
@@ -327,6 +536,32 @@ with DAG(
         python_callable=validation_failed_callable,
     )
 
+    t_embed_conv = PythonOperator(
+        task_id="embed_conversations",
+        python_callable=embed_conversations_callable,
+    )
+    t_embed_jour = PythonOperator(
+        task_id="embed_journals",
+        python_callable=embed_journals_callable,
+    )
+
+    t_embedding_complete = EmptyOperator(task_id="embedding_complete")
+
+    t_train_jour = PythonOperator(
+        task_id="train_journal_model",
+        python_callable=train_journal_model_callable,
+    )
+    t_train_conv = PythonOperator(
+        task_id="train_conversation_model",
+        python_callable=train_conversation_model_callable,
+    )
+    t_train_severity = PythonOperator(
+        task_id="train_severity_model",
+        python_callable=train_severity_model_callable,
+    )
+
+    t_training_complete = EmptyOperator(task_id="training_complete")
+
     t_bias_conv = PythonOperator(
         task_id="bias_conversations",
         python_callable=bias_conversations_callable,
@@ -338,16 +573,10 @@ with DAG(
 
     t_bias_complete = EmptyOperator(task_id="bias_complete")
 
-    t_embed_conv = PythonOperator(
-        task_id="embed_conversations",
-        python_callable=embed_conversations_callable,
+    t_compute_analytics = PythonOperator(
+        task_id="compute_patient_analytics",
+        python_callable=compute_patient_analytics_callable,
     )
-    t_embed_jour = PythonOperator(
-        task_id="embed_journals",
-        python_callable=embed_journals_callable,
-    )
-
-    t_embedding_complete = EmptyOperator(task_id="embedding_complete")
 
     t_store = PythonOperator(
         task_id="store_to_mongodb",
@@ -365,6 +594,15 @@ with DAG(
     )
 
     # dependency graph
+    #
+    # start → [download_conv, generate_jour] → [preprocess_conv, preprocess_jour] →
+    # preprocessing_complete → validate → branch
+    #   ├─ (pass) → [embed_conv, embed_jour] → embedding_complete →
+    #   │  [train_jour_model, train_conv_model, train_severity_model] → training_complete →
+    #   │  [bias_conv, bias_jour] → bias_complete → compute_analytics →
+    #   │  store_to_mongodb → success_email → end
+    #   └─ (fail) → validation_failed → end
+
     t_start >> [t_download_conv, t_generate_jour]
 
     t_download_conv >> t_preprocess_conv
@@ -374,15 +612,19 @@ with DAG(
 
     t_preprocessing_complete >> t_validate >> t_val_branch
 
-    t_val_branch >> [t_bias_conv, t_bias_jour]
+    t_val_branch >> [t_embed_conv, t_embed_jour]
     t_val_branch >> t_val_failed
-
-    [t_bias_conv, t_bias_jour] >> t_bias_complete
-
-    t_bias_complete >> [t_embed_conv, t_embed_jour]
 
     [t_embed_conv, t_embed_jour] >> t_embedding_complete
 
-    t_embedding_complete >> t_store >> t_success_email
+    t_embedding_complete >> [t_train_jour, t_train_conv, t_train_severity]
+
+    [t_train_jour, t_train_conv, t_train_severity] >> t_training_complete
+
+    t_training_complete >> [t_bias_conv, t_bias_jour]
+
+    [t_bias_conv, t_bias_jour] >> t_bias_complete
+
+    t_bias_complete >> t_compute_analytics >> t_store >> t_success_email
 
     [t_success_email, t_val_failed] >> t_end

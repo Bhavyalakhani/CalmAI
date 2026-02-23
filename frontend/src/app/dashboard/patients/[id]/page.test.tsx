@@ -72,10 +72,10 @@ describe("Patient profile page", () => {
     });
   });
 
-  it("displays theme distribution", async () => {
+  it("displays topic distribution", async () => {
     render(<PatientProfilePage />);
     await waitFor(() => {
-      expect(screen.getByText("Theme Distribution")).toBeInTheDocument();
+      expect(screen.getByText("Topic Distribution")).toBeInTheDocument();
     });
   });
 

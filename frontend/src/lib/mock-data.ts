@@ -281,16 +281,15 @@ export const mockPatientAnalytics: PatientAnalytics[] = [
   {
     patientId: "p-001",
     totalEntries: 47,
-    themeDistribution: [
-      { theme: "anxiety", percentage: 28.5, count: 22 },
-      { theme: "positive", percentage: 19.4, count: 15 },
-      { theme: "therapy", percentage: 15.2, count: 12 },
-      { theme: "work", percentage: 12.1, count: 9 },
-      { theme: "sleep", percentage: 8.8, count: 7 },
-      { theme: "depression", percentage: 7.0, count: 5 },
-      { theme: "social", percentage: 5.5, count: 4 },
-      { theme: "negative", percentage: 3.5, count: 3 },
+    topicDistribution: [
+      { topicId: 0, label: "anxiety & stress", keywords: ["anxious", "worry"], percentage: 28.5, count: 22 },
+      { topicId: 1, label: "positive outlook", keywords: ["happy", "grateful"], percentage: 19.4, count: 15 },
+      { topicId: 2, label: "therapy progress", keywords: ["therapy", "coping"], percentage: 15.2, count: 12 },
+      { topicId: 3, label: "work challenges", keywords: ["work", "deadline"], percentage: 12.1, count: 9 },
     ],
+    topicsOverTime: [],
+    representativeEntries: [],
+    modelVersion: "v1.0_mock",
     avgWordCount: 28.4,
     entryFrequency: [
       { month: "2025-10", count: 8 },
@@ -305,15 +304,14 @@ export const mockPatientAnalytics: PatientAnalytics[] = [
   {
     patientId: "p-002",
     totalEntries: 32,
-    themeDistribution: [
-      { theme: "anxiety", percentage: 38.2, count: 26 },
-      { theme: "therapy", percentage: 18.0, count: 12 },
-      { theme: "positive", percentage: 14.5, count: 10 },
-      { theme: "negative", percentage: 11.3, count: 8 },
-      { theme: "social", percentage: 8.5, count: 6 },
-      { theme: "sleep", percentage: 5.0, count: 3 },
-      { theme: "work", percentage: 4.5, count: 3 },
+    topicDistribution: [
+      { topicId: 0, label: "anxiety & stress", keywords: ["anxious", "worry"], percentage: 38.2, count: 26 },
+      { topicId: 1, label: "therapy progress", keywords: ["therapy", "coping"], percentage: 18.0, count: 12 },
+      { topicId: 2, label: "positive outlook", keywords: ["happy", "grateful"], percentage: 14.5, count: 10 },
     ],
+    topicsOverTime: [],
+    representativeEntries: [],
+    modelVersion: "v1.0_mock",
     avgWordCount: 25.1,
     entryFrequency: [
       { month: "2025-11", count: 5 },
@@ -327,15 +325,14 @@ export const mockPatientAnalytics: PatientAnalytics[] = [
   {
     patientId: "p-003",
     totalEntries: 58,
-    themeDistribution: [
-      { theme: "work", percentage: 32.0, count: 30 },
-      { theme: "anxiety", percentage: 22.1, count: 21 },
-      { theme: "sleep", percentage: 16.4, count: 15 },
-      { theme: "negative", percentage: 10.5, count: 10 },
-      { theme: "therapy", percentage: 9.0, count: 8 },
-      { theme: "positive", percentage: 6.5, count: 6 },
-      { theme: "social", percentage: 3.5, count: 3 },
+    topicDistribution: [
+      { topicId: 0, label: "work challenges", keywords: ["work", "deadline"], percentage: 32.0, count: 30 },
+      { topicId: 1, label: "anxiety & stress", keywords: ["anxious", "worry"], percentage: 22.1, count: 21 },
+      { topicId: 2, label: "sleep issues", keywords: ["sleep", "insomnia"], percentage: 16.4, count: 15 },
     ],
+    topicsOverTime: [],
+    representativeEntries: [],
+    modelVersion: "v1.0_mock",
     avgWordCount: 31.2,
     entryFrequency: [
       { month: "2025-09", count: 10 },
@@ -351,14 +348,14 @@ export const mockPatientAnalytics: PatientAnalytics[] = [
   {
     patientId: "p-004",
     totalEntries: 18,
-    themeDistribution: [
-      { theme: "positive", percentage: 30.0, count: 9 },
-      { theme: "social", percentage: 25.0, count: 8 },
-      { theme: "therapy", percentage: 18.0, count: 5 },
-      { theme: "anxiety", percentage: 12.0, count: 4 },
-      { theme: "work", percentage: 8.0, count: 2 },
-      { theme: "negative", percentage: 7.0, count: 2 },
+    topicDistribution: [
+      { topicId: 0, label: "positive outlook", keywords: ["happy", "grateful"], percentage: 30.0, count: 9 },
+      { topicId: 1, label: "social connections", keywords: ["friend", "family"], percentage: 25.0, count: 8 },
+      { topicId: 2, label: "therapy progress", keywords: ["therapy", "coping"], percentage: 18.0, count: 5 },
     ],
+    topicsOverTime: [],
+    representativeEntries: [],
+    modelVersion: "v1.0_mock",
     avgWordCount: 26.8,
     entryFrequency: [
       { month: "2025-12", count: 4 },
@@ -371,15 +368,14 @@ export const mockPatientAnalytics: PatientAnalytics[] = [
   {
     patientId: "p-005",
     totalEntries: 41,
-    themeDistribution: [
-      { theme: "depression", percentage: 25.3, count: 18 },
-      { theme: "therapy", percentage: 22.0, count: 16 },
-      { theme: "anxiety", percentage: 15.8, count: 11 },
-      { theme: "negative", percentage: 13.0, count: 9 },
-      { theme: "positive", percentage: 10.5, count: 8 },
-      { theme: "sleep", percentage: 7.2, count: 5 },
-      { theme: "social", percentage: 6.2, count: 4 },
+    topicDistribution: [
+      { topicId: 0, label: "low mood", keywords: ["sad", "hopeless"], percentage: 25.3, count: 18 },
+      { topicId: 1, label: "therapy progress", keywords: ["therapy", "coping"], percentage: 22.0, count: 16 },
+      { topicId: 2, label: "anxiety & stress", keywords: ["anxious", "worry"], percentage: 15.8, count: 11 },
     ],
+    topicsOverTime: [],
+    representativeEntries: [],
+    modelVersion: "v1.0_mock",
     avgWordCount: 29.5,
     entryFrequency: [
       { month: "2025-10", count: 6 },

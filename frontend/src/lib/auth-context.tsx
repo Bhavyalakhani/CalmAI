@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import type { Therapist, Patient, UserRole } from "@/types";
+import type { Therapist, Patient } from "@/types";
 import {
   login as apiLogin,
   signup as apiSignup,

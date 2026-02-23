@@ -30,9 +30,15 @@ vi.mock("@/lib/auth-context", () => ({
 
 vi.mock("@/lib/api", () => ({
   fetchConversations: vi.fn(),
+  fetchConversationTopics: vi.fn(),
+  fetchConversationSeverities: vi.fn(),
 }));
 
-import { fetchConversations } from "@/lib/api";
+import {
+  fetchConversations,
+  fetchConversationTopics,
+  fetchConversationSeverities,
+} from "@/lib/api";
 import ConversationsPage from "@/app/dashboard/conversations/page";
 
 describe("Conversations page", () => {
@@ -42,6 +48,18 @@ describe("Conversations page", () => {
       total: mockConversations.length,
       page: 1,
       pageSize: 20,
+    });
+    vi.mocked(fetchConversationTopics).mockResolvedValue({
+      topics: [
+        { label: "anxiety", count: 120 },
+        { label: "relationships", count: 85 },
+      ],
+    });
+    vi.mocked(fetchConversationSeverities).mockResolvedValue({
+      severities: [
+        { label: "moderate", count: 12 },
+        { label: "severe", count: 6 },
+      ],
     });
   });
 
@@ -56,13 +74,25 @@ describe("Conversations page", () => {
     });
   });
 
-  it("shows tab filters", async () => {
+  it("shows dropdown filters", async () => {
+    render(<ConversationsPage />);
+    // wait for full render cycle (conversations + topics load in parallel)
+    await waitFor(() => {
+      expect(screen.getByText(/panic attacks almost every day/)).toBeInTheDocument();
+    });
+    expect(screen.getByText("All Topics")).toBeInTheDocument();
+    expect(screen.getByText("All Severities")).toBeInTheDocument();
+    // dynamic topic tabs loaded from api
+    expect(screen.getAllByText(/anxiety/i).length).toBeGreaterThan(0);
+  });
+
+  it("loads topic and severity options", async () => {
     render(<ConversationsPage />);
     await waitFor(() => {
-      expect(screen.getByText("All Topics")).toBeInTheDocument();
-      expect(screen.getByText("Anxiety")).toBeInTheDocument();
-      expect(screen.getByText("Depression")).toBeInTheDocument();
+      expect(screen.getByText(/panic attacks almost every day/)).toBeInTheDocument();
     });
+    expect(fetchConversationTopics).toHaveBeenCalled();
+    expect(fetchConversationSeverities).toHaveBeenCalled();
   });
 
   it("displays sample conversation content", async () => {

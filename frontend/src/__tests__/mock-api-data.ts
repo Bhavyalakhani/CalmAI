@@ -95,16 +95,25 @@ export const mockDashboardStats: DashboardStats = {
 export const mockAnalytics: PatientAnalytics = {
   patientId: "p-001",
   totalEntries: 47,
-  themeDistribution: [
-    { theme: "anxiety", percentage: 35, count: 16 },
-    { theme: "work", percentage: 20, count: 9 },
-    { theme: "positive", percentage: 15, count: 7 },
-    { theme: "sleep", percentage: 12, count: 6 },
-    { theme: "social", percentage: 10, count: 5 },
-    { theme: "depression", percentage: 5, count: 2 },
-    { theme: "therapy", percentage: 2, count: 1 },
-    { theme: "negative", percentage: 1, count: 1 },
+  topicDistribution: [
+    { topicId: 0, label: "anxiety & stress", keywords: ["anxious", "worry", "stress"], percentage: 35, count: 16 },
+    { topicId: 1, label: "work challenges", keywords: ["work", "deadline", "boss"], percentage: 20, count: 9 },
+    { topicId: 2, label: "positive outlook", keywords: ["happy", "grateful", "progress"], percentage: 15, count: 7 },
+    { topicId: 3, label: "sleep issues", keywords: ["sleep", "insomnia", "tired"], percentage: 12, count: 6 },
+    { topicId: 4, label: "social connections", keywords: ["friend", "family", "support"], percentage: 10, count: 5 },
+    { topicId: 5, label: "low mood", keywords: ["sad", "hopeless", "empty"], percentage: 5, count: 2 },
+    { topicId: 6, label: "therapy progress", keywords: ["therapy", "coping", "session"], percentage: 2, count: 1 },
+    { topicId: 7, label: "frustration", keywords: ["angry", "frustrated", "upset"], percentage: 1, count: 1 },
   ],
+  topicsOverTime: [
+    { month: "2025-01", topicId: 0, label: "anxiety & stress", frequency: 8 },
+    { month: "2025-02", topicId: 0, label: "anxiety & stress", frequency: 5 },
+    { month: "2025-01", topicId: 1, label: "work challenges", frequency: 4 },
+  ],
+  representativeEntries: [
+    { topicId: 0, label: "anxiety & stress", journalId: "j-001", content: "feeling very anxious today", entryDate: "2025-01-15", probability: 0.92 },
+  ],
+  modelVersion: "v1.0_20250217",
   avgWordCount: 24,
   entryFrequency: [
     { month: "2024-11", count: 8 },

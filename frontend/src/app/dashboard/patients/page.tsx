@@ -345,13 +345,13 @@ export default function PatientsPage() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">Top theme</span>
+                  <span className="text-muted-foreground">Top topic</span>
                   <Badge
                     variant="secondary"
                     className="text-[10px] capitalize"
                   >
                     <Activity className="mr-1 h-3 w-3" />
-                    {analytics?.themeDistribution[0]?.theme ?? "-"}
+                    {analytics?.topicDistribution[0]?.label ?? "-"}
                   </Badge>
                 </div>
               </CardContent>

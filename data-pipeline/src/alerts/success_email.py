@@ -23,10 +23,13 @@ TASK_ORDER = [
     ("preprocess_conversations", "Preprocess Conversations"),
     ("preprocess_journals", "Preprocess Journals"),
     ("validate_data", "Validate Data"),
-    ("bias_conversations", "Bias Analysis — Conversations"),
-    ("bias_journals", "Bias Analysis — Journals"),
     ("embed_conversations", "Embed Conversations"),
     ("embed_journals", "Embed Journals"),
+    ("train_journal_model", "Train Journal Topic Model"),
+    ("train_conversation_model", "Train Conversation Topic Model"),
+    ("bias_conversations", "Bias Analysis — Conversations"),
+    ("bias_journals", "Bias Analysis — Journals"),
+    ("compute_patient_analytics", "Compute Patient Analytics"),
     ("store_to_mongodb", "Store to MongoDB"),
 ]
 

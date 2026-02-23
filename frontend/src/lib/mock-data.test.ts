@@ -49,7 +49,7 @@ describe("mock data exports", () => {
     mockPatientAnalytics.forEach((a) => {
       expect(a.patientId).toBeTruthy();
       expect(a.totalEntries).toBeGreaterThan(0);
-      expect(a.themeDistribution.length).toBeGreaterThan(0);
+      expect(a.topicDistribution.length).toBeGreaterThan(0);
       expect(a.avgWordCount).toBeGreaterThan(0);
       expect(a.entryFrequency.length).toBeGreaterThan(0);
     });
@@ -126,7 +126,7 @@ describe("getAnalyticsForPatient", () => {
     expect(analytics).toBeDefined();
     expect(analytics!.patientId).toBe("p-001");
     expect(analytics!.totalEntries).toBe(47);
-    expect(analytics!.themeDistribution.length).toBeGreaterThan(0);
+    expect(analytics!.topicDistribution.length).toBeGreaterThan(0);
   });
 
   it("returns analytics for each patient", () => {

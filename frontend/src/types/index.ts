@@ -31,17 +31,6 @@ export interface Patient extends User {
 
 // journal
 
-export type JournalTheme =
-  | "anxiety"
-  | "depression"
-  | "positive"
-  | "negative"
-  | "therapy"
-  | "sleep"
-  | "social"
-  | "work"
-  | "unclassified";
-
 export type MoodScore = 1 | 2 | 3 | 4 | 5; // 1 = very low, 5 = great
 
 export interface JournalEntry {
@@ -49,7 +38,7 @@ export interface JournalEntry {
   patientId: string;
   content: string;
   entryDate: string; // ISO date
-  themes: JournalTheme[];
+  themes: string[]; // dynamic topic labels from bertopic model
   wordCount: number;
   charCount: number;
   sentenceCount: number;
@@ -65,37 +54,53 @@ export interface JournalEntry {
 
 // conversations (therapist context)
 
-export type ConversationTopic =
-  | "anxiety"
-  | "depression"
-  | "relationships"
-  | "family"
-  | "work"
-  | "trauma"
-  | "self_harm"
-  | "substance"
-  | "grief"
-  | "identity";
-
 export type SeverityLevel = "crisis" | "severe" | "moderate" | "mild" | "unknown";
 
 export interface Conversation {
   id: string;
   context: string;
   response: string;
-  topic?: ConversationTopic;
+  topic?: string; // dynamic bertopic label
   severity?: SeverityLevel;
   contextWordCount: number;
   responseWordCount: number;
   sourceFile: string;
 }
 
+export interface TopicCount {
+  label: string;
+  count: number;
+}
+
+export interface SeverityCount {
+  label: string;
+  count: number;
+}
+
 // analytics
 
-export interface ThemeDistribution {
-  theme: JournalTheme;
+export interface TopicDistribution {
+  topicId: number;
+  label: string;
+  keywords: string[];
   percentage: number;
   count: number;
+}
+
+export interface TopicOverTime {
+  month: string;
+  topicId: number;
+  label: string;
+  frequency: number;
+}
+
+export interface RepresentativeEntry {
+  topicId: number;
+  label: string;
+  journalId: string;
+  content: string;
+  entryDate: string;
+  probability: number;
 }
 
 export interface EntryFrequency {
@@ -112,7 +117,10 @@ export interface DateRange {
 export interface PatientAnalytics {
   patientId: string;
   totalEntries: number;
-  themeDistribution: ThemeDistribution[];
+  topicDistribution: TopicDistribution[];
+  topicsOverTime: TopicOverTime[];
+  representativeEntries: RepresentativeEntry[];
+  modelVersion: string;
   avgWordCount: number;
   entryFrequency: EntryFrequency[];
   dateRange: DateRange | null;

@@ -123,11 +123,36 @@ SAMPLE_CONVERSATION = {
     "source_file": "dataset1",
 }
 
+SAMPLE_CONVERSATION_2 = {
+    "_id": ObjectId(),
+    "conversation_id": "conv_def67890",
+    "context": "My relationship with my partner has been really difficult lately.",
+    "response": "That sounds challenging. Can you tell me more about what's happening?",
+    "topic": "relationships",
+    "severity": "mild",
+    "context_word_count": 10,
+    "response_word_count": 12,
+    "source_file": "dataset1",
+}
+
 SAMPLE_ANALYTICS = {
     "_id": ObjectId(),
     "patient_id": PATIENT_ID,
     "total_entries": 25,
-    "theme_distribution": {"anxiety": 10, "work": 8, "positive": 5, "sleep": 2},
+    "topic_distribution": [
+        {"topic_id": 0, "label": "anxiety & stress", "keywords": ["anxious", "worry", "stress"], "percentage": 40.0, "count": 10},
+        {"topic_id": 1, "label": "work challenges", "keywords": ["work", "deadline", "boss"], "percentage": 32.0, "count": 8},
+        {"topic_id": 2, "label": "positive outlook", "keywords": ["happy", "grateful", "progress"], "percentage": 20.0, "count": 5},
+        {"topic_id": 3, "label": "sleep issues", "keywords": ["sleep", "insomnia", "tired"], "percentage": 8.0, "count": 2},
+    ],
+    "topics_over_time": [
+        {"month": "2025-05", "topic_id": 0, "label": "anxiety & stress", "frequency": 6},
+        {"month": "2025-06", "topic_id": 0, "label": "anxiety & stress", "frequency": 4},
+    ],
+    "representative_entries": [
+        {"topic_id": 0, "label": "anxiety & stress", "journal_id": "j001", "content": "feeling very anxious today", "entry_date": "2025-05-10", "probability": 0.92},
+    ],
+    "model_version": "v1.0_20250614",
     "avg_word_count": 45.3,
     "entry_frequency": {"2025-05": 12, "2025-06": 13},
     "date_range": {"first": "2025-05-01", "last": "2025-06-13", "span_days": 43},
@@ -211,8 +236,10 @@ class MockCollection:
     async def update_one(self, query, update, upsert=False):
         result = MagicMock()
         result.modified_count = 0
+        result.matched_count = 0
         for doc in self._data:
             if self._matches(doc, query):
+                result.matched_count = 1
                 if "$set" in update:
                     doc.update(update["$set"])
                 if "$addToSet" in update:
@@ -221,7 +248,31 @@ class MockCollection:
                             doc[key] = []
                         if val not in doc[key]:
                             doc[key].append(val)
+                if "$pull" in update:
+                    for key, val in update["$pull"].items():
+                        if key in doc and isinstance(doc[key], list):
+                            doc[key] = [v for v in doc[key] if v != val]
                 result.modified_count = 1
+                break
+        return result
+
+    async def update_many(self, query, update, upsert=False):
+        result = MagicMock()
+        result.modified_count = 0
+        for doc in self._data:
+            if self._matches(doc, query):
+                if "$set" in update:
+                    doc.update(update["$set"])
+                result.modified_count += 1
+        return result
+
+    async def delete_one(self, query):
+        result = MagicMock()
+        result.deleted_count = 0
+        for i, doc in enumerate(self._data):
+            if self._matches(doc, query):
+                self._data.pop(i)
+                result.deleted_count = 1
                 break
         return result
 
@@ -229,8 +280,51 @@ class MockCollection:
         return "mock_index"
 
     def aggregate(self, pipeline):
-        # simplified aggregate — return empty cursor for stats
-        return AsyncCursorMock([])
+        # basic aggregate support for $match, $group, $sort
+        results = list(self._data)
+
+        for stage in pipeline:
+            if "$match" in stage:
+                match_query = stage["$match"]
+                filtered = []
+                for doc in results:
+                    keep = True
+                    for key, val in match_query.items():
+                        doc_val = doc.get(key)
+                        if isinstance(val, dict):
+                            if "$ne" in val and doc_val == val["$ne"]:
+                                keep = False
+                        elif doc_val != val:
+                            keep = False
+                    if keep:
+                        filtered.append(doc)
+                results = filtered
+            elif "$group" in stage:
+                group_spec = stage["$group"]
+                group_field = group_spec["_id"]
+                if isinstance(group_field, str) and group_field.startswith("$"):
+                    group_field = group_field[1:]
+                groups = {}
+                for doc in results:
+                    key = doc.get(group_field)
+                    if key not in groups:
+                        groups[key] = {"_id": key}
+                        for agg_key in group_spec:
+                            if agg_key == "_id":
+                                continue
+                            groups[key][agg_key] = 0
+                    for agg_key, agg_val in group_spec.items():
+                        if agg_key == "_id":
+                            continue
+                        if isinstance(agg_val, dict) and "$sum" in agg_val:
+                            groups[key][agg_key] += 1
+                results = list(groups.values())
+            elif "$sort" in stage:
+                sort_spec = stage["$sort"]
+                for field, direction in sort_spec.items():
+                    results.sort(key=lambda d, f=field: d.get(f, 0), reverse=(direction == -1))
+
+        return AsyncCursorMock(results)
 
     def _matches(self, doc, query):
         """basic mongodb query matching for tests"""
@@ -270,7 +364,7 @@ class MockDatabase:
             SAMPLE_JOURNAL.copy(),
             SAMPLE_JOURNAL_2.copy(),
         ])
-        self.conversations = MockCollection([SAMPLE_CONVERSATION.copy()])
+        self.conversations = MockCollection([SAMPLE_CONVERSATION.copy(), SAMPLE_CONVERSATION_2.copy()])
         self.incoming_journals = MockCollection([])
         self.patient_analytics = MockCollection([SAMPLE_ANALYTICS.copy()])
         self.rag_vectors = MockCollection([])

@@ -1,10 +1,18 @@
 # analytics router — patient analytics from the patient_analytics collection
 # both therapists (for their patients) and patients (for themselves) can access
+# supports new bertopic topic_distribution and legacy theme_distribution formats
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.models.analytics import PatientAnalyticsResponse, ThemeDistribution, EntryFrequency, DateRange
+from app.models.analytics import (
+    PatientAnalyticsResponse,
+    TopicDistribution,
+    TopicOverTime,
+    RepresentativeEntry,
+    EntryFrequency,
+    DateRange,
+)
 from app.services.db import Database, get_db
 from app.dependencies import get_current_user
 
@@ -25,28 +33,103 @@ async def _resolve_pipeline_id(user_id: str, db: Database) -> str:
     return user_id
 
 
-def _doc_to_analytics(doc: dict) -> PatientAnalyticsResponse:
-    """convert a mongodb patient_analytics document to response model"""
+def _clean_label(raw_label: str) -> str:
+    """clean a topic label that may be stored as a stringified python list.
+    bertopic 0.17.x multi-aspect representations store labels as lists like
+    "['topic: Sleep Quality', '', '', ...]". this extracts the first non-empty
+    element and strips the 'topic: ' prefix from the gemini prompt format.
+    """
+    import ast
 
-    # parse theme_distribution
-    # pipeline stores {theme: percentage} (e.g. {"anxiety": 19.7, "work": 15.3})
-    # we need to convert to ThemeDistribution objects with theme, percentage, count
-    raw_themes = doc.get("theme_distribution", {})
+    text = str(raw_label).strip()
+    if not text:
+        return ""
+
+    # detect stringified list: "['topic: ...', '', '', ...]"
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            items = ast.literal_eval(text)
+            if isinstance(items, list):
+                for item in items:
+                    s = str(item).strip() if item is not None else ""
+                    if s:
+                        text = s
+                        break
+                else:
+                    return text  # no non-empty element, return raw
+        except (ValueError, SyntaxError):
+            pass  # not a valid python literal, treat as plain string
+
+    # strip "topic: " prefix from gemini prompt format
+    if text.lower().startswith("topic: "):
+        text = text[7:].strip()
+    elif text.lower().startswith("topic:"):
+        text = text[6:].strip()
+
+    # replace generic bertopic fallback labels like "Topic 24" with "Miscellaneous"
+    if text and text.startswith("Topic ") and text.split(" ", 1)[1].strip().isdigit():
+        text = "Miscellaneous"
+
+    return text
+
+
+def _doc_to_analytics(doc: dict) -> PatientAnalyticsResponse:
+    """convert a mongodb patient_analytics document to response model.
+    supports new bertopic format (topic_distribution as list of dicts with topic_id, label, keywords)
+    and legacy format (theme_distribution as {theme: percentage} dict)."""
+
     total_entries = doc.get("total_entries", 0)
-    theme_list = []
-    if isinstance(raw_themes, dict):
-        for theme, value in sorted(raw_themes.items(), key=lambda x: x[1], reverse=True):
-            pct = float(value)
-            # approximate count from percentage and total entries
-            count = round(pct / 100 * total_entries) if total_entries > 0 else 0
-            theme_list.append(ThemeDistribution(theme=theme, percentage=pct, count=count))
-    elif isinstance(raw_themes, list):
-        for item in raw_themes:
+    topic_list: list[TopicDistribution] = []
+
+    # new format: topic_distribution is a list of dicts
+    raw_topics = doc.get("topic_distribution", [])
+    if isinstance(raw_topics, list) and raw_topics:
+        for item in raw_topics:
             if isinstance(item, dict):
-                theme_list.append(ThemeDistribution(
-                    theme=item.get("theme", ""),
-                    percentage=item.get("percentage", 0),
+                topic_list.append(TopicDistribution(
+                    topicId=item.get("topic_id", -1),
+                    label=_clean_label(item.get("label", "")),
+                    keywords=item.get("keywords", []),
+                    percentage=item.get("percentage", 0.0),
                     count=item.get("count", 0),
+                ))
+    else:
+        # legacy fallback: theme_distribution as {theme: percentage} dict
+        raw_themes = doc.get("theme_distribution", {})
+        if isinstance(raw_themes, dict):
+            for idx, (theme, value) in enumerate(sorted(raw_themes.items(), key=lambda x: x[1], reverse=True)):
+                pct = float(value)
+                count = round(pct / 100 * total_entries) if total_entries > 0 else 0
+                topic_list.append(TopicDistribution(
+                    topicId=idx, label=theme, keywords=[], percentage=pct, count=count,
+                ))
+
+    # topics over time
+    topics_over_time: list[TopicOverTime] = []
+    raw_tot = doc.get("topics_over_time", [])
+    if isinstance(raw_tot, list):
+        for item in raw_tot:
+            if isinstance(item, dict):
+                topics_over_time.append(TopicOverTime(
+                    month=item.get("month", ""),
+                    topicId=item.get("topic_id", -1),
+                    label=_clean_label(item.get("label", "")),
+                    frequency=item.get("frequency", 0),
+                ))
+
+    # representative entries
+    representative_entries: list[RepresentativeEntry] = []
+    raw_repr = doc.get("representative_entries", [])
+    if isinstance(raw_repr, list):
+        for item in raw_repr:
+            if isinstance(item, dict):
+                representative_entries.append(RepresentativeEntry(
+                    topicId=item.get("topic_id", -1),
+                    label=_clean_label(item.get("label", "")),
+                    journalId=item.get("journal_id", ""),
+                    content=item.get("content", ""),
+                    entryDate=str(item.get("entry_date", "")),
+                    probability=item.get("probability", 0.0),
                 ))
 
     # parse entry_frequency
@@ -73,7 +156,10 @@ def _doc_to_analytics(doc: dict) -> PatientAnalyticsResponse:
     return PatientAnalyticsResponse(
         patientId=doc.get("patient_id", ""),
         totalEntries=doc.get("total_entries", 0),
-        themeDistribution=theme_list,
+        topicDistribution=topic_list,
+        topicsOverTime=topics_over_time,
+        representativeEntries=representative_entries,
+        modelVersion=doc.get("model_version", ""),
         avgWordCount=doc.get("avg_word_count", 0.0),
         entryFrequency=freq_list,
         dateRange=date_range,

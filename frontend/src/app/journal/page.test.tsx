@@ -165,7 +165,7 @@ describe("Journal page", () => {
   });
 
   it("shows saving state when entry is submitted", async () => {
-    vi.mocked(submitJournal).mockReturnValue(new Promise(() => {}) as any); // never resolves
+    vi.mocked(submitJournal).mockReturnValue(new Promise(() => {}) as Promise<{ journalId: string; message: string }>); // never resolves
     const user = userEvent.setup();
     render(<JournalPage />);
 

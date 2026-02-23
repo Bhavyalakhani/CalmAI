@@ -55,3 +55,53 @@ class TestListConversations:
     async def test_patient_cannot_list_conversations(self, patient_client):
         resp = await patient_client.get("/conversations")
         assert resp.status_code == 403
+
+
+class TestConversationTopics:
+    """list unique conversation topics"""
+
+    async def test_list_topics(self, therapist_client):
+        resp = await therapist_client.get("/conversations/topics")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "topics" in data
+        topics = data["topics"]
+        assert isinstance(topics, list)
+        assert len(topics) >= 1
+        for t in topics:
+            assert "label" in t
+            assert "count" in t
+
+    async def test_topics_include_known_labels(self, therapist_client):
+        resp = await therapist_client.get("/conversations/topics")
+        labels = [t["label"] for t in resp.json()["topics"]]
+        assert "anxiety" in labels
+
+    async def test_patient_cannot_list_topics(self, patient_client):
+        resp = await patient_client.get("/conversations/topics")
+        assert resp.status_code == 403
+
+
+class TestConversationSeverities:
+    """list unique conversation severities"""
+
+    async def test_list_severities(self, therapist_client):
+        resp = await therapist_client.get("/conversations/severities")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "severities" in data
+        severities = data["severities"]
+        assert isinstance(severities, list)
+        assert len(severities) >= 1
+        for s in severities:
+            assert "label" in s
+            assert "count" in s
+
+    async def test_severities_include_known_levels(self, therapist_client):
+        resp = await therapist_client.get("/conversations/severities")
+        labels = [s["label"] for s in resp.json()["severities"]]
+        assert "moderate" in labels
+
+    async def test_patient_cannot_list_severities(self, patient_client):
+        resp = await patient_client.get("/conversations/severities")
+        assert resp.status_code == 403
