@@ -268,3 +268,157 @@ class TestRefresh:
             "refreshToken": access,
         })
         assert resp.status_code == 401
+
+
+class TestUpdateProfile:
+    """profile update endpoint"""
+
+    async def test_update_name(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/profile", json={
+            "name": "Dr. Sarah Chen-Updated",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Dr. Sarah Chen-Updated"
+
+    async def test_update_specialization(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/profile", json={
+            "specialization": "Trauma Therapy",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["specialization"] == "Trauma Therapy"
+
+    async def test_update_practice_name(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/profile", json={
+            "practiceName": "New Practice Name",
+        })
+        assert resp.status_code == 200
+
+    async def test_update_multiple_fields(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/profile", json={
+            "name": "Dr. Updated",
+            "specialization": "DBT",
+            "practiceName": "Updated Practice",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Dr. Updated"
+
+    async def test_update_empty_body(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/profile", json={})
+        assert resp.status_code == 422
+        assert "No fields to update" in resp.json()["detail"]
+
+    async def test_patient_cannot_update_specialization(self, patient_client, mock_db):
+        resp = await patient_client.patch("/auth/profile", json={
+            "name": "Updated Patient",
+            "specialization": "Ignored Field",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Updated Patient"
+        # specialization is therapist-only, should be ignored for patients
+        assert "specialization" not in data or data.get("specialization") is None
+
+
+class TestUpdateNotifications:
+    """notification preferences endpoint"""
+
+    async def test_save_notifications(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/notifications", json={
+            "emailNotifications": True,
+            "journalAlerts": False,
+            "weeklyDigest": True,
+        })
+        assert resp.status_code == 200
+        assert "message" in resp.json()
+
+    async def test_save_notifications_defaults(self, therapist_client, mock_db):
+        resp = await therapist_client.patch("/auth/notifications", json={})
+        assert resp.status_code == 200
+
+
+class TestDeleteAccount:
+    """account deletion endpoint"""
+
+    async def test_delete_therapist_account(self, therapist_client, mock_db):
+        initial_count = len(mock_db.users._data)
+        resp = await therapist_client.delete("/auth/account")
+        assert resp.status_code == 204
+        assert len(mock_db.users._data) == initial_count - 1
+
+    async def test_delete_patient_account(self, patient_client, mock_db):
+        initial_count = len(mock_db.users._data)
+        resp = await patient_client.delete("/auth/account")
+        assert resp.status_code == 204
+        assert len(mock_db.users._data) == initial_count - 1
+
+    async def test_delete_patient_unlinks_from_therapist(self, patient_client, mock_db):
+        # verify patient is in therapist's patient_ids before deletion
+        therapist = mock_db.users._data[0]
+        assert PATIENT_ID in therapist.get("patient_ids", [])
+
+        resp = await patient_client.delete("/auth/account")
+        assert resp.status_code == 204
+
+        # verify patient was removed from therapist's list
+        therapist = mock_db.users._data[0]
+        assert PATIENT_ID not in therapist.get("patient_ids", [])
+
+
+class TestAuthGuards:
+    """no-auth guard tests for new endpoints"""
+
+    async def test_update_profile_no_auth(self, client):
+        app.dependency_overrides.pop(get_current_user, None)
+        resp = await client.patch("/auth/profile", json={"name": "Anon"})
+        assert resp.status_code in (401, 403)
+
+    async def test_update_notifications_no_auth(self, client):
+        app.dependency_overrides.pop(get_current_user, None)
+        resp = await client.patch("/auth/notifications", json={})
+        assert resp.status_code in (401, 403)
+
+    async def test_delete_account_no_auth(self, client):
+        app.dependency_overrides.pop(get_current_user, None)
+        resp = await client.delete("/auth/account")
+        assert resp.status_code in (401, 403)
+
+
+class TestDeleteTherapistUnlinks:
+    """therapist deletion unlinks all patients"""
+
+    async def test_delete_therapist_unlinks_patients(self, therapist_client, mock_db):
+        # before deletion, patients reference this therapist
+        assert mock_db.users._data[1].get("therapist_id") == THERAPIST_ID
+
+        resp = await therapist_client.delete("/auth/account")
+        assert resp.status_code == 204
+
+        # remaining patients should have therapist_id cleared
+        remaining = [d for d in mock_db.users._data if d.get("role") == "patient"]
+        for p in remaining:
+            assert p.get("therapist_id") == ""
+
+
+class TestProfilePatient:
+    """patient-specific profile and notification tests"""
+
+    async def test_patient_update_name(self, patient_client, mock_db):
+        resp = await patient_client.patch("/auth/profile", json={
+            "name": "Alex Updated",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "Alex Updated"
+        assert data["role"] == "patient"
+
+    async def test_patient_save_notifications(self, patient_client, mock_db):
+        resp = await patient_client.patch("/auth/notifications", json={
+            "emailNotifications": False,
+            "journalAlerts": True,
+            "weeklyDigest": False,
+        })
+        assert resp.status_code == 200
+        assert "message" in resp.json()

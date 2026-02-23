@@ -42,12 +42,12 @@ All clinical judgment stays with human therapists - the system surfaces informat
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                          Apache Airflow (Docker)                            │
 │                                                                             │
-│  DAG 1: calm_ai_data_pipeline (manual trigger, batch)                       │
-│  ┌───────┐   ┌──────────┐   ┌──────────┐   ┌──────┐   ┌───────┐            │
-│  │Acquire├──►│Preprocess├──►│ Validate ├──►│ Bias ├──►│ Embed │            │
-│  └───────┘   └──────────┘   └────┬─────┘   └──────┘   └───┬───┘            │
-│                                  │ gate                    │                │
-│                             pass/fail                      ▼                │
+│  DAG 1: calm_ai_data_pipeline (manual trigger, batch, 23 tasks)             │
+│  ┌───────┐   ┌──────────┐   ┌──────────┐   ┌───────┐   ┌─────┐   ┌──────┐ │
+│  │Acquire├──►│Preprocess├──►│ Validate ├──►│ Embed ├──►│Train├──►│ Bias │ │
+│  └───────┘   └──────────┘   └────┬─────┘   └───────┘   └──┬──┘   └──┬───┘ │
+│                                  │ gate                    │         │      │
+│                             pass/fail                      ▼         ▼      │
 │                                             ┌─────────┐ ┌───────┐          │
 │                                             │ MongoDB  │◄┤ Store │          │
 │                                             │  Atlas   │ └───┬───┘          │
@@ -76,11 +76,13 @@ External Services:
 | Orchestration | Apache Airflow 2.8.1 (CeleryExecutor, Redis, PostgreSQL) |
 | Containerization | Docker Compose (6 services) |
 | ML/Data | Python, Pandas, NumPy, Sentence-Transformers |
+| Topic Modeling | BERTopic (>=0.17.0), Gemini LLM labeling, three independent models (journals, conversations, severity) |
+| Experiment Tracking | MLflow (>=3.0.0), local file-backed at `mlruns/` |
 | Storage | MongoDB Atlas (unified vector store) |
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (205 tests, 13 test files) |
+| Testing | pytest (322 tests, 15 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -232,7 +234,7 @@ cd data-pipeline
 python run_pipeline.py
 ```
 
-This runs all 10 pipeline steps sequentially with timing:
+This runs all 14 pipeline steps sequentially with timing:
 
 | Step | Description |
 |---|---|
@@ -244,8 +246,12 @@ This runs all 10 pipeline steps sequentially with timing:
 | 6 | Bias analysis - conversations |
 | 7 | Bias analysis - journals |
 | 8 | Embed conversations + journals |
-| 9 | Store to MongoDB |
-| 10 | DVC version tracking (`dvc commit --force` + `dvc push`) |
+| 9 | Train journal topic model (BERTopic) |
+| 10 | Train conversation topic model (BERTopic) |
+| 11 | Train severity model (BERTopic) |
+| 12 | Store to MongoDB (+ classify conversations with topics & severity) |
+| 13 | Compute patient analytics (per-patient topic distribution) |
+| 14 | DVC version tracking (`dvc commit --force` + `dvc push`) |
 
 At the end, a summary table shows duration per step and the total runtime.
 
@@ -279,7 +285,8 @@ data-pipeline/
 │   ├── bias_detection/
 │   │   ├── slicer.py                # Generic data slicing utilities
 │   │   ├── conversation_bias.py     # Topic, severity, response quality analysis
-│   │   └── journal_bias.py          # Theme, temporal, patient distribution analysis
+│   │   ├── journal_bias.py          # Theme, temporal, patient distribution analysis
+│   │   └── severity.py              # BERTopic severity singleton wrapper (classify_severity)
 │   │
 │   ├── embedding/
 │   │   └── embedder.py              # Sentence-transformer embedding generation
@@ -288,12 +295,21 @@ data-pipeline/
 │   │   └── mongodb_client.py        # MongoDB operations (CRUD, indexes, batch inserts)
 │   │
 │   ├── analytics/
-│   │   └── patient_analytics.py     # Per-patient analytics and theme classification
+│   │   └── patient_analytics.py     # Per-patient analytics (BERTopic model required)
+│   │
+│   ├── topic_modeling/
+│   │   ├── __init__.py              # Public API exports
+│   │   ├── config.py                # TopicModelConfig — shared BERTopic + MLflow settings
+│   │   ├── experiment_tracker.py    # MLflowTracker — experiment logging, model registry
+│   │   ├── trainer.py               # TopicModelTrainer — BERTopic training with Gemini LLM labeling
+│   │   ├── inference.py             # TopicModelInference — topic prediction from saved models
+│   │   ├── validation.py            # TopicModelValidator — quality metrics, coverage checks
+│   │   └── bias_analysis.py         # TopicBiasAnalyzer — bias detection using BERTopic topics
 │   │
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 205 tests across 13 files
+├── tests/                           # 322 tests across 15 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
@@ -307,7 +323,9 @@ data-pipeline/
 │   ├── test_embedding.py
 │   ├── test_storage.py
 │   ├── test_analytics.py
-│   └── test_incoming_pipeline.py
+│   ├── test_incoming_pipeline.py
+│   ├── test_topic_modeling.py       # BERTopic trainer + inference tests
+│   └── test_topic_bias.py           # Topic-based bias analysis tests
 │
 ├── data/
 │   ├── raw/                         # Downloaded and generated raw data
@@ -318,6 +336,12 @@ data-pipeline/
 │   │   └── journals/
 │   └── embeddings/
 │       └── incoming_journals/       # Runtime incoming journal embeddings
+│
+├── models/
+│   └── bertopic_{type}/             # BERTopic model artifacts (journals, conversations, severity)
+│       └── latest/model             # Safetensors serialization
+│
+├── mlruns/                          # MLflow experiment tracking (local file-backed)
 │
 ├── reports/
 │   ├── bias/                        # JSON reports + PNG visualizations
@@ -341,12 +365,14 @@ data-pipeline/
 | `conversation_preprocessor.py` | Merges two conversation datasets, deduplicates via MD5 hash (`context \|\|\| response`), computes text statistics, creates embedding text (`User concern: ...\n\nCounselor response: ...`). |
 | `journal_preprocessor.py` | Parses and forward-fills dates, computes temporal features (`day_of_week`, `week_number`, `month`, `year`, `days_since_last`), creates date-prefixed embedding text. |
 | `schema_validator.py` | Expectation-based validation: column existence, non-null checks, type checks, uniqueness, string non-empty, value ranges. Reports pass rate per dataset. Also validates incoming journals. |
-| `slicer.py` | Generic keyword-based slicing utilities used by both bias analyzers. |
-| `conversation_bias.py` | Classifies conversations into 10 topics and 4 severity levels. Flags underrepresented topics (<3%). Analyzes response length by topic. Generates visualizations. |
-| `journal_bias.py` | Classifies journals into 8 themes. Analyzes temporal patterns (entries by day/month), patient distribution, and sparse patients (<10 entries). Generates visualizations. |
+| `slicer.py` | Generic slicing utilities used by both bias analyzers. |
+| `conversation_bias.py` | Uses `TopicModelInference(model_type="conversations")` (model required). Classifies conversations into topics and 4 severity levels via BERTopic severity model. Flags underrepresented topics (<3%). Analyzes response length by topic. Generates visualizations. |
+| `journal_bias.py` | Uses `TopicModelInference(model_type="journals")` (model required). Classifies journals into topics. Analyzes temporal patterns (entries by day/month), patient distribution, and sparse patients (<10 entries). Generates visualizations. |
+| `severity.py` | BERTopic severity singleton wrapper. Lazy-loads `TopicModelInference(model_type="severity")` once, exposes `classify_severity()`, `classify_severity_batch()`, `classify_severity_series()`. Returns `"unknown"` when model is unavailable. Used by `mongodb_client`, `conversation_bias`, and `bias_analysis`. |
 | `embedder.py` | Loads `sentence-transformers/all-MiniLM-L6-v2`, generates 384-dim embeddings in batches of 64. Separate functions for conversations, journals, and incoming journals. |
 | `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Logs pipeline runs to `pipeline_metadata`. |
-| `patient_analytics.py` | Per-patient theme classification using keyword matching across 8 themes. Computes analytics for the incoming journals pipeline. |
+| `patient_analytics.py` | Per-patient topic classification using `TopicModelInference(model_type="journals")`. Returns "unclassified" when model unavailable. Computes topic distribution, topics over time, representative entries, and frequency analytics. |
+| `topic_modeling/` | BERTopic topic modeling module (7 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification (`predict_severity`, `predict_severity_series`). `TopicModelValidator` checks quality metrics. `TopicBiasAnalyzer` detects bias using BERTopic topics and severity model. Models saved to `models/bertopic_{type}/latest/model` (safetensors). **No train-test split** — BERTopic is an unsupervised clustering algorithm, so each model is trained on the full dataset via `fit_transform()`. Model quality is evaluated post-hoc using internal metrics (topic diversity, outlier ratio, size Gini, label uniqueness) rather than held-out test data. |
 | `success_email.py` | Sends HTML email with task duration table, MongoDB collection stats, and pipeline summary on successful completion. |
 
 ---
@@ -355,7 +381,7 @@ data-pipeline/
 
 ### DAG 1 - Batch Pipeline (`calm_ai_data_pipeline`)
 
-**Trigger**: Manual | **Mode**: Clear + Replace (idempotent)
+**Trigger**: Manual | **Mode**: Clear + Replace (idempotent) | **Tasks**: 23
 
 ```
 start
@@ -370,19 +396,25 @@ start
                                                ┌───────────┴───────────┐
                                           (pass)                  (fail)
                                     ┌────┴────┐            validation_failed
-                             bias_conversations  bias_journals
-                                    └────┬────┘
-                                    bias_complete
-                                    ┌────┴────┐
                              embed_conversations  embed_journals
                                     └────┬────┘
                                   embedding_complete
-                                         ↓
-                                   store_to_mongodb
-                                         ↓
-                                    success_email
-                                         ↓
-                                        end
+                      ┌─────────────────┼─────────────────┐
+               train_journal_model  train_conversation_model  train_severity_model
+                      └─────────────────┼─────────────────┘
+                                  training_complete
+                               ┌────────┴────────┐
+                        bias_conversations  bias_journals
+                               └────────┬────────┘
+                                   bias_complete
+                                        ↓
+                            compute_patient_analytics
+                                        ↓
+                                  store_to_mongodb
+                                        ↓
+                                   success_email
+                                        ↓
+                                       end
 ```
 
 ### DAG 2 - Incoming Journals (`incoming_journals_pipeline`)
@@ -416,7 +448,7 @@ The pipeline is designed for maximum throughput through parallelism, synchroniza
 
 ### Parallelism Strategy
 
-The DAG exploits four parallel execution branches in the batch pipeline:
+The DAG exploits five parallel execution branches in the batch pipeline:
 
 | Stage | Parallel Tasks | Rationale |
 |---|---|---|
@@ -424,16 +456,18 @@ The DAG exploits four parallel execution branches in the batch pipeline:
 | Preprocessing | `preprocess_conversations` \|\| `preprocess_journals` | Each operates on its own dataset with no shared state |
 | Bias Detection | `bias_conversations` \|\| `bias_journals` | Separate analyzers, separate reports |
 | Embedding | `embed_conversations` \|\| `embed_journals` | Independent embedding batches with no cross-dependency |
+| Training | `train_journal_model` \|\| `train_conversation_model` \|\| `train_severity_model` | Independent BERTopic models trained in parallel |
 
 The incoming journals DAG (DAG 2) is intentionally sequential since each step depends on the previous output, and `max_active_runs=1` prevents overlapping runs.
 
 ### Synchronization Points
 
-Three `EmptyOperator` nodes act as synchronization barriers:
+Four `EmptyOperator` nodes act as synchronization barriers:
 
 - **`preprocessing_complete`** - waits for both preprocessors before validation
-- **`bias_complete`** - waits for both bias analyzers before embedding
-- **`embedding_complete`** - waits for both embedders before MongoDB storage
+- **`embedding_complete`** - waits for both embedders before model training
+- **`training_complete`** - waits for all three BERTopic trainers before bias analysis
+- **`bias_complete`** - waits for both bias analyzers before patient analytics and MongoDB storage
 
 This ensures downstream tasks never execute on partial data.
 
@@ -486,7 +520,7 @@ dvc remote add -d gcs_remote gs://calmai-dvc-storage/data-pipeline
 
 ### Pipeline Stages
 
-The `dvc.yaml` (at project root) mirrors the Airflow DAG with 9 stages:
+The `dvc.yaml` (at project root) mirrors the Airflow DAG with 12 stages:
 
 | Stage | Outputs |
 |---|---|
@@ -499,6 +533,9 @@ The `dvc.yaml` (at project root) mirrors the Airflow DAG with 9 stages:
 | `bias_journals` | `reports/bias/journal_bias_report.json` |
 | `embed_conversations` | `data/processed/conversations/embedded_conversations.parquet` |
 | `embed_journals` | `data/processed/journals/embedded_journals.parquet` |
+| `train_journal_model` | `models/bertopic_journals/` (BERTopic safetensors) |
+| `train_conversation_model` | `models/bertopic_conversations/` (BERTopic safetensors) |
+| `train_severity_model` | `models/bertopic_severity/` (BERTopic safetensors) |
 
 ### Commands
 
@@ -571,7 +608,7 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (205 tests)
+### Test Summary (322 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
@@ -581,13 +618,15 @@ pytest tests/test_embedding.py -v
 | `test_journal_preprocessor.py` | 17 | Date parsing, temporal features, forward-fill |
 | `test_preprocessing.py` | 2 | Cross-preprocessor integration tests |
 | `test_schema_validator.py` | 32 | All expectation types, pass/fail reporting, incoming validation |
-| `test_slicer.py` | 17 | Keyword slicing, threshold detection |
+| `test_slicer.py` | 17 | Data slicing, threshold detection |
 | `test_conversation_bias.py` | 19 | Topic classification, severity, visualizations |
 | `test_journal_bias.py` | 20 | Theme classification, temporal analysis |
 | `test_embedding.py` | 19 | Embedding generation, batch processing, incoming |
 | `test_storage.py` | 24 | MongoDB CRUD, batch inserts, indexes, stats |
-| `test_analytics.py` | 5 | Patient theme classification, analytics computation |
+| `test_analytics.py` | 5 | Patient topic classification, analytics computation |
 | `test_incoming_pipeline.py` | 19 | Validation, staging, analytics |
+| `test_topic_modeling.py` | — | BERTopic trainer, inference, validation |
+| `test_topic_bias.py` | — | Topic-based bias analysis using BERTopic |
 | `conftest.py` | - | Shared fixtures, mock settings, sample DataFrames |
 
 All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers) are mocked in tests.
@@ -640,7 +679,9 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Vector search returns results via Atlas
 - [ ] Bias reports in `reports/bias/` with visualization PNGs
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
-- [ ] All 205 tests passing (`pytest tests/ -v`)
+- [ ] BERTopic models saved to `models/bertopic_journals/`, `models/bertopic_conversations/`, and `models/bertopic_severity/`
+- [ ] MLflow experiments tracked in `mlruns/`
+- [ ] All 322 tests passing (`pytest tests/ -v`)
 
 ---
 

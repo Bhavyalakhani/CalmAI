@@ -1,6 +1,6 @@
 # dag 2 — incoming journal micro-batch pipeline
 # fetches unprocessed journals from mongodb, preprocesses, validates, embeds,
-# stores, updates analytics and sends email notifications on success/failure
+# stores, updates analytics (using trained bertopic model) and sends email notifications
 # schedule: every 30 minutes | short-circuits if no new entries
 
 from datetime import datetime, timedelta, timezone

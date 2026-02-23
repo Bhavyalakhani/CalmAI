@@ -3,9 +3,9 @@
 
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
+
 import {
   Card,
   CardContent,
@@ -17,7 +17,6 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -36,7 +35,6 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
-  Loader2,
 } from "lucide-react";
 import {
   fetchPatient,
@@ -49,19 +47,7 @@ import type {
   PatientAnalytics,
   JournalEntry,
   TrendDataPoint,
-  JournalTheme,
 } from "@/types";
-
-const ALL_THEMES: JournalTheme[] = [
-  "anxiety",
-  "depression",
-  "positive",
-  "negative",
-  "therapy",
-  "sleep",
-  "social",
-  "work",
-];
 
 const PAGE_SIZE = 20;
 
@@ -75,7 +61,6 @@ export default function PatientProfilePage() {
   const [journals, setJournals] = useState<JournalEntry[]>([]);
   const [moodTrend, setMoodTrend] = useState<TrendDataPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [journalsLoading, setJournalsLoading] = useState(false);
 
   // filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -124,7 +109,7 @@ export default function PatientProfilePage() {
     // theme filter
     if (themeFilter !== "all") {
       filtered = filtered.filter((j) =>
-        j.themes.includes(themeFilter as JournalTheme)
+        j.themes.includes(themeFilter)
       );
     }
 
@@ -149,7 +134,7 @@ export default function PatientProfilePage() {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
-        <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
           <Skeleton className="h-96" />
           <div className="space-y-4">
             <Skeleton className="h-48" />
@@ -236,9 +221,9 @@ export default function PatientProfilePage() {
           <CardContent className="flex items-center gap-3 pt-6">
             <Activity className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-xs text-muted-foreground">Top Theme</p>
+              <p className="text-xs text-muted-foreground">Top Topic</p>
               <p className="text-sm font-medium capitalize">
-                {analytics?.themeDistribution[0]?.theme ?? "-"}
+                {analytics?.topicDistribution[0]?.label ?? "-"}
               </p>
             </div>
           </CardContent>
@@ -246,7 +231,7 @@ export default function PatientProfilePage() {
       </div>
 
       {/* main content */}
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
         {/* journal entries */}
         <div className="space-y-4">
           <Card>
@@ -274,13 +259,13 @@ export default function PatientProfilePage() {
                 </div>
                 <Select value={themeFilter} onValueChange={setThemeFilter}>
                   <SelectTrigger className="w-40">
-                    <SelectValue placeholder="Theme" />
+                    <SelectValue placeholder="Topic" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All themes</SelectItem>
-                    {ALL_THEMES.map((t) => (
-                      <SelectItem key={t} value={t}>
-                        <span className="capitalize">{t}</span>
+                    <SelectItem value="all">All topics</SelectItem>
+                    {(analytics?.topicDistribution ?? []).map((t) => (
+                      <SelectItem key={t.topicId} value={t.label}>
+                        <span className="capitalize">{t.label}</span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -395,19 +380,19 @@ export default function PatientProfilePage() {
 
         {/* sidebar: analytics */}
         <div className="space-y-4">
-          {/* theme distribution */}
+          {/* topic distribution */}
           {analytics && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-medium">
-                  Theme Distribution
+                  Topic Distribution
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {analytics.themeDistribution.map((t) => (
-                  <div key={t.theme} className="flex items-center gap-3">
-                    <span className="w-24 text-xs capitalize text-muted-foreground">
-                      {t.theme}
+                {analytics.topicDistribution.map((t) => (
+                  <div key={t.topicId} className="flex items-center gap-3">
+                    <span className="w-32 shrink-0 text-xs capitalize text-muted-foreground break-words leading-tight" title={t.label}>
+                      {t.label}
                     </span>
                     <div className="flex-1">
                       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -460,10 +445,10 @@ export default function PatientProfilePage() {
                   </div>
                   <div className="rounded-lg border p-3 text-center">
                     <div className="text-lg font-bold capitalize">
-                      {analytics.themeDistribution[0]?.theme ?? "-"}
+                      {analytics.topicDistribution[0]?.label ?? "-"}
                     </div>
                     <div className="text-[11px] text-muted-foreground">
-                      Top theme
+                      Top topic
                     </div>
                   </div>
                 </div>

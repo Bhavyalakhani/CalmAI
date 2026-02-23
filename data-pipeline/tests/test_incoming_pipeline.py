@@ -260,7 +260,7 @@ class TestMongoDBStagingMethods:
         client = MongoDBClient(uri="mongodb://test", database="test_db")
         client.settings = mock_settings
 
-        analytics = {"total_entries": 10, "theme_distribution": {"anxiety": 40}}
+        analytics = {"total_entries": 10, "topic_distribution": [{"topic_id": 0, "label": "anxiety", "percentage": 40}]}
         client.upsert_patient_analytics("p1", analytics)
 
         mock_collection.update_one.assert_called_once()
@@ -294,28 +294,33 @@ class TestMongoDBStagingMethods:
 
 class TestPatientAnalytics:
 
-    def test_classify_themes_anxiety(self):
+    def test_classify_topics_no_model(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
-        themes = pa.classify_themes("I feel so anxious and worried today")
-        assert "anxiety" in themes
+        pa._model_loaded = False
+        result = pa.classify_topics("I feel so anxious and worried today")
+        assert result["label"] == "unclassified"
+        assert result["topic_id"] == -1
 
-    def test_classify_themes_multiple(self):
+    def test_classify_topics_no_model_any_text(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
-        themes = pa.classify_themes("I'm depressed and can't sleep at all")
-        assert "depression" in themes
-        assert "sleep" in themes
+        pa._model_loaded = False
+        # without model, all text returns unclassified
+        result = pa.classify_topics("I'm depressed and can't sleep at all")
+        assert result["label"] == "unclassified"
 
-    def test_classify_themes_unclassified(self):
+    def test_classify_topics_unclassified(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
-        themes = pa.classify_themes("The weather is nice")
-        assert themes == ["unclassified"]
+        pa._model_loaded = False
+        result = pa.classify_topics("The weather is nice")
+        assert result["label"] == "unclassified"
 
-    def test_compute_analytics_basic(self):
+    def test_compute_analytics_no_model(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
+        pa._model_loaded = False
 
         journals = [
             {"content": "Feeling anxious about tomorrow", "entry_date": "2025-01-01"},
@@ -325,22 +330,25 @@ class TestPatientAnalytics:
 
         result = pa.compute_patient_analytics(journals)
         assert result["total_entries"] == 3
-        assert isinstance(result["theme_distribution"], dict)
+        assert result["topic_distribution"] == []
         assert result["avg_word_count"] > 0
         assert result["date_range"] is not None
         assert result["date_range"]["span_days"] > 0
+        assert result["model_version"] == "unavailable"
 
     def test_compute_analytics_empty(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
+        pa._model_loaded = False
 
         result = pa.compute_patient_analytics([])
         assert result["total_entries"] == 0
-        assert result["theme_distribution"] == {}
+        assert result["topic_distribution"] == []
 
     def test_entry_frequency_by_month(self):
         from analytics.patient_analytics import PatientAnalytics
         pa = PatientAnalytics()
+        pa._model_loaded = False
 
         journals = [
             {"content": "Entry jan 1", "entry_date": "2025-01-05"},

@@ -22,7 +22,7 @@ logger = logging.getLogger("pipeline")
 # helpers
 
 DIVIDER = "=" * 60
-TOTAL_STEPS = 10
+TOTAL_STEPS = 14
 
 
 def step(number, name):
@@ -155,8 +155,110 @@ def run():
     jour_emb_path, metrics["embed_journals"] = timed(run_embed_journals)
     logger.info(f"  journals      → {jour_emb_path}")
 
-    # 9. store in mongodb
-    step(9, "Store to MongoDB")
+    # 9. train journal topic model (requires bertopic / umap / hdbscan)
+    step(9, "Train journal topic model")
+
+    def train_journal_model():
+        import pandas as pd
+        import numpy as np
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="journals")
+        trainer = TopicModelTrainer(cfg)
+        df = pd.read_parquet(jour_emb_path)
+        docs, timestamps = trainer.prepare_journal_docs(df)
+        embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
+        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps)
+        model_path = trainer.save_model()
+        validator = TopicModelValidator()
+        report = validator.validate(result)
+        validator.save_report(report)
+        return {
+            "model_path": str(model_path),
+            "num_topics": result.get("num_topics", 0),
+            "outlier_ratio": result.get("outlier_ratio", 0),
+            "status": report.get("status", "unknown"),
+        }
+
+    try:
+        journal_model_info, metrics["train_journal_model"] = timed(train_journal_model)
+        logger.info(f"  journal model: {journal_model_info['num_topics']} topics, status={journal_model_info['status']}")
+    except Exception as e:
+        logger.warning(f"  journal model training skipped: {e}")
+        metrics["train_journal_model"] = 0
+
+    # 10. train conversation topic model (requires bertopic / umap / hdbscan)
+    step(10, "Train conversation topic model")
+
+    def train_conversation_model():
+        import pandas as pd
+        import numpy as np
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="conversations")
+        trainer = TopicModelTrainer(cfg)
+        df = pd.read_parquet(conv_emb_path)
+        docs, _ = trainer.prepare_conversation_docs(df)
+        embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
+        result = trainer.train(docs, embeddings=embeddings)
+        model_path = trainer.save_model()
+        validator = TopicModelValidator()
+        report = validator.validate(result)
+        validator.save_report(report)
+        return {
+            "model_path": str(model_path),
+            "num_topics": result.get("num_topics", 0),
+            "outlier_ratio": result.get("outlier_ratio", 0),
+            "status": report.get("status", "unknown"),
+        }
+
+    try:
+        conv_model_info, metrics["train_conversation_model"] = timed(train_conversation_model)
+        logger.info(f"  conversation model: {conv_model_info['num_topics']} topics, status={conv_model_info['status']}")
+    except Exception as e:
+        logger.warning(f"  conversation model training skipped: {e}")
+        metrics["train_conversation_model"] = 0
+
+    # 11. train severity model (uses same conversation embeddings with severity prompt)
+    step(11, "Train severity model")
+
+    def train_severity_model():
+        import pandas as pd
+        import numpy as np
+        from topic_modeling.trainer import TopicModelTrainer
+        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.validation import TopicModelValidator
+
+        cfg = TopicModelConfig(model_type="severity")
+        trainer = TopicModelTrainer(cfg)
+        df = pd.read_parquet(conv_emb_path)
+        docs, _ = trainer.prepare_conversation_docs(df)
+        embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
+        result = trainer.train(docs, embeddings=embeddings)
+        model_path = trainer.save_model()
+        validator = TopicModelValidator()
+        report = validator.validate(result)
+        validator.save_report(report)
+        return {
+            "model_path": str(model_path),
+            "num_clusters": result.get("num_topics", 0),
+            "outlier_ratio": result.get("outlier_ratio", 0),
+            "status": report.get("status", "unknown"),
+        }
+
+    try:
+        severity_model_info, metrics["train_severity_model"] = timed(train_severity_model)
+        logger.info(f"  severity model: {severity_model_info['num_clusters']} clusters, status={severity_model_info['status']}")
+    except Exception as e:
+        logger.warning(f"  severity model training skipped: {e}")
+        metrics["train_severity_model"] = 0
+
+    # 12. store in mongodb
+    step(12, "Store to MongoDB")
     from storage.mongodb_client import MongoDBClient
 
     client = MongoDBClient()
@@ -175,6 +277,13 @@ def run():
         insert_results, metrics["store_to_mongodb"] = timed(store_all)
         logger.info(f"  insert results: {insert_results}")
 
+        # classify conversations with bertopic topics + severity
+        try:
+            classify_result = client.classify_and_update_conversations()
+            logger.info(f"  classification: {classify_result}")
+        except Exception as ce:
+            logger.warning(f"  conversation classification failed (non-fatal): {ce}")
+
         stats = client.get_collection_stats()
         logger.info(f"  collection stats: {stats}")
 
@@ -189,8 +298,38 @@ def run():
     finally:
         client.close()
 
-    # 10. dvc version tracking
-    step(10, "DVC version tracking")
+    # 13. compute patient analytics
+    step(13, "Compute patient analytics")
+
+    def compute_analytics():
+        from analytics.patient_analytics import PatientAnalytics
+        pa = PatientAnalytics()
+        df = pd.read_parquet(
+            settings.PROCESSED_DATA_DIR / "journals" / "processed_journals.parquet"
+        )
+        patient_ids = df["patient_id"].unique().tolist()
+
+        analytics_client = MongoDBClient()
+        try:
+            analytics_client.connect()
+            for pid in patient_ids:
+                patient_df = df[df["patient_id"] == pid]
+                journals = patient_df.to_dict(orient="records")
+                analytics = pa.compute_patient_analytics(journals)
+                analytics_client.upsert_patient_analytics(str(pid), analytics)
+            return len(patient_ids)
+        finally:
+            analytics_client.close()
+
+    try:
+        patients_done, metrics["compute_analytics"] = timed(compute_analytics)
+        logger.info(f"  analytics computed for {patients_done} patients")
+    except Exception as e:
+        logger.warning(f"  patient analytics failed (non-fatal): {e}")
+        metrics["compute_analytics"] = 0
+
+    # 14. dvc version tracking
+    step(14, "DVC version tracking")
     import subprocess
 
     def dvc_version():

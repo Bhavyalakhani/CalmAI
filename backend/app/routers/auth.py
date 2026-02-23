@@ -15,6 +15,8 @@ from app.models.user import (
     UserResponse,
     TherapistResponse,
     PatientResponse,
+    ProfileUpdate,
+    NotificationPreferences,
 )
 from app.services.db import Database, get_db
 from app.services.auth_service import (
@@ -263,3 +265,139 @@ async def refresh_token(body: RefreshRequest, db: Database = Depends(get_db)):
         accessToken=access_token,
         refreshToken=new_refresh_token,
     )
+
+
+@router.patch("/profile")
+async def update_profile(
+    body: ProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """update the current user's profile fields"""
+
+    user_id = current_user.get("id", "")
+    update_fields: dict = {}
+
+    if body.name is not None:
+        update_fields["name"] = body.name
+
+    # therapist-specific fields
+    if current_user.get("role") == "therapist":
+        if body.specialization is not None:
+            update_fields["specialization"] = body.specialization
+        if body.practice_name is not None:
+            update_fields["practice_name"] = body.practice_name
+
+    if not update_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No fields to update",
+        )
+
+    try:
+        result = await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_fields},
+        )
+    except Exception as e:
+        logger.error(f"Failed to update profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile",
+        )
+
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # fetch updated user document
+    updated = await db.users.find_one({"_id": ObjectId(user_id)})
+    logger.info(f"Profile updated for user {user_id}")
+    return _user_to_response(updated)
+
+
+@router.patch("/notifications")
+async def update_notifications(
+    body: NotificationPreferences,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """save notification preferences for the current user"""
+
+    user_id = current_user.get("id", "")
+
+    prefs = {
+        "notifications": {
+            "email_notifications": body.email_notifications,
+            "journal_alerts": body.journal_alerts,
+            "weekly_digest": body.weekly_digest,
+        }
+    }
+
+    try:
+        await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": prefs},
+        )
+    except Exception as e:
+        logger.error(f"Failed to save notifications: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save notification preferences",
+        )
+
+    logger.info(f"Notifications updated for user {user_id}")
+    return {"message": "Notification preferences saved"}
+
+
+@router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """permanently delete the current user's account"""
+
+    user_id = current_user.get("id", "")
+    role = current_user.get("role", "")
+
+    # unlink patient from therapist
+    if role == "patient":
+        therapist_id = current_user.get("therapist_id", "")
+        if therapist_id:
+            try:
+                await db.users.update_one(
+                    {"_id": ObjectId(therapist_id)},
+                    {"$pull": {"patient_ids": user_id}},
+                )
+            except Exception as e:
+                logger.warning(f"Could not unlink patient from therapist: {e}")
+
+    # for therapists, unlink all patients
+    if role == "therapist":
+        try:
+            await db.users.update_many(
+                {"therapist_id": user_id, "role": "patient"},
+                {"$set": {"therapist_id": ""}},
+            )
+        except Exception as e:
+            logger.warning(f"Could not unlink patients from therapist: {e}")
+
+    # delete user document
+    try:
+        result = await db.users.delete_one({"_id": ObjectId(user_id)})
+    except Exception as e:
+        logger.error(f"Failed to delete account: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete account",
+        )
+
+    if result.deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    logger.info(f"Account deleted: {user_id} ({role})")

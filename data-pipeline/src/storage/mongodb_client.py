@@ -108,6 +108,8 @@ class MongoDBClient:
 
         self.conversations.create_indexes([
             IndexModel([("conversation_id", ASCENDING)], unique=True),
+            IndexModel([("topic", ASCENDING)]),
+            IndexModel([("severity", ASCENDING)]),
         ])
 
         self.journals.create_indexes([
@@ -247,7 +249,7 @@ class MongoDBClient:
                 },
             })
 
-            raw_docs.append({
+            raw_doc = {
                 "conversation_id": r["conversation_id"],
                 "context": r.get("context", ""),
                 "response": r.get("response", ""),
@@ -263,7 +265,13 @@ class MongoDBClient:
                 "response_avg_word_length": r.get("response_avg_word_length", 0.0),
                 "embedding_text": r.get("embedding_text", ""),
                 "is_embedded": True,
-            })
+            }
+            # include topic/severity if present in the dataframe
+            if "topic" in r and r["topic"] is not None:
+                raw_doc["topic"] = r["topic"]
+            if "severity" in r and r["severity"] is not None:
+                raw_doc["severity"] = r["severity"]
+            raw_docs.append(raw_doc)
 
         logger.info(f"Inserting {len(df)} conversations into MongoDB...")
         vec_count = self._batch_insert(self.rag_vectors, vector_docs)
@@ -468,6 +476,100 @@ class MongoDBClient:
 
         logger.info(f"Appended {vec_count} vector docs, {raw_count} raw journal docs")
         return {"rag_vectors": vec_count, "journals": raw_count}
+
+    # conversation classification (topic + severity)
+
+    @staticmethod
+    def classify_severity(text: str) -> str:
+        """classify severity using bertopic severity model.
+        delegates to shared severity module."""
+        from src.severity import classify_severity
+        return classify_severity(text)
+
+    def classify_and_update_conversations(self) -> Dict[str, int]:
+        """classify all conversations with bertopic topics + bertopic severity.
+        reads context from mongodb conversations collection, predicts topics
+        using the trained conversation model, predicts severity using the
+        trained severity model, then bulk-updates the mongodb documents."""
+        self.connect()
+
+        # load all conversation contexts
+        docs = list(self.conversations.find({}, {"conversation_id": 1, "context": 1}))
+        if not docs:
+            logger.info("No conversations to classify")
+            return {"classified": 0, "topic_updates": 0, "severity_updates": 0}
+
+        logger.info(f"Classifying {len(docs)} conversations...")
+        contexts = [d.get("context", "") for d in docs]
+
+        # topic classification via bertopic
+        try:
+            from topic_modeling.inference import TopicModelInference
+            inference = TopicModelInference(model_type="conversations")
+            if not inference.load():
+                raise RuntimeError("Conversation BERTopic model not available")
+
+            topics, _ = inference.predict(contexts)
+            topic_labels = [inference.get_topic_label(int(t)) for t in topics]
+        except Exception as e:
+            logger.error(f"Topic classification failed: {e}")
+            raise
+
+        # severity classification via bertopic severity model (batch)
+        try:
+            from src.severity import classify_severity_batch
+            severities = classify_severity_batch(contexts)
+        except Exception as e:
+            logger.warning(f"Severity model classification failed: {e}")
+            severities = ["unknown"] * len(contexts)
+
+        topic_updates = 0
+        severity_updates = 0
+
+        from pymongo import UpdateOne
+        operations = []
+
+        for doc, topic_id, topic_label, severity in zip(docs, topics, topic_labels, severities):
+            cid = doc["conversation_id"]
+
+            update_fields = {}
+            topic_id_int = int(topic_id)
+            if topic_id_int != -1:
+                update_fields["topic"] = topic_label
+                topic_updates += 1
+            else:
+                update_fields["topic"] = "Other"
+                topic_updates += 1
+
+            update_fields["severity"] = severity
+            severity_updates += 1
+
+            operations.append(
+                UpdateOne(
+                    {"conversation_id": cid},
+                    {"$set": update_fields},
+                )
+            )
+
+        # execute in batches
+        total_modified = 0
+        for i in range(0, len(operations), BATCH_SIZE):
+            batch = operations[i:i + BATCH_SIZE]
+            result = self.conversations.bulk_write(batch, ordered=False)
+            total_modified += result.modified_count
+
+        logger.info(
+            f"Classified {len(docs)} conversations: "
+            f"{topic_updates} topic updates, {severity_updates} severity updates, "
+            f"{total_modified} documents modified"
+        )
+
+        return {
+            "classified": len(docs),
+            "topic_updates": topic_updates,
+            "severity_updates": severity_updates,
+            "modified": total_modified,
+        }
 
     def upsert_patient_analytics(self, patient_id: str, analytics: Dict[str, Any]):
         """upsert analytics data for a patient (topic dist, mood trends, etc.)"""

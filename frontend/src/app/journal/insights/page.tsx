@@ -9,12 +9,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   LineChart,
   TrendingUp,
-  TrendingDown,
+
   Activity,
   Brain,
 } from "lucide-react";
@@ -99,16 +99,16 @@ export default function InsightsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Top Theme
+              Top Topic
             </CardTitle>
             <Brain className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold capitalize">
-              {analytics.themeDistribution[0]?.theme ?? "-"}
+              {analytics.topicDistribution[0]?.label ?? "-"}
             </div>
             <p className="text-xs text-muted-foreground">
-              {analytics.themeDistribution[0]?.percentage ?? 0}% of entries
+              {analytics.topicDistribution[0]?.percentage ?? 0}% of entries
             </p>
           </CardContent>
         </Card>
@@ -129,19 +129,19 @@ export default function InsightsPage() {
         </Card>
       </div>
 
-      {/* Theme Distribution */}
+      {/* Topic Distribution */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">Theme Distribution</CardTitle>
+          <CardTitle className="text-sm">Topic Distribution</CardTitle>
           <CardDescription>
-            Keyword-based classification of your journal entries into 8 themes
+            BERTopic model classification of your journal entries
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {analytics.themeDistribution.map((td) => (
-            <div key={td.theme} className="flex items-center gap-3">
-              <span className="w-24 text-sm capitalize text-muted-foreground">
-                {td.theme}
+          {analytics.topicDistribution.map((td) => (
+            <div key={td.topicId} className="flex items-center gap-3">
+              <span className="w-24 text-sm capitalize text-muted-foreground truncate" title={td.label}>
+                {td.label}
               </span>
               <div className="flex-1">
                 <div className="h-3 overflow-hidden rounded-full bg-muted">
@@ -201,7 +201,7 @@ export default function InsightsPage() {
       <div className="rounded-lg border border-dashed p-4">
         <p className="text-xs text-muted-foreground">
           <Brain className="mr-1 inline h-3 w-3" />
-          These insights are generated from keyword-based analysis of your
+          These insights are generated from BERTopic model analysis of your
           journal entries. They are informational patterns, not clinical
           assessments. Please discuss any concerns with your therapist.
         </p>

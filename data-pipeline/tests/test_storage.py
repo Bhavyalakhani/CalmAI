@@ -266,6 +266,58 @@ class TestCollectionStats:
         assert "pipeline_metadata" in stats
 
 
+# classify_severity (bertopic severity model)
+class TestClassifySeverity:
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_delegates_to_severity_model(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["crisis"]
+        assert MongoDBClient.classify_severity("I want to kill myself") == "crisis"
+        mock_inference.predict_severity.assert_called_once_with(["I want to kill myself"])
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_returns_model_prediction(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["moderate"]
+        assert MongoDBClient.classify_severity("I've been struggling") == "moderate"
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_severe_from_model(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["severe"]
+        assert MongoDBClient.classify_severity("I feel desperate and unbearable pain.") == "severe"
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_mild_from_model(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["mild"]
+        assert MongoDBClient.classify_severity("I occasionally feel a little nervous.") == "mild"
+
+    def test_empty_string(self):
+        assert MongoDBClient.classify_severity("") == "unknown"
+
+    @patch("src.severity._inference", None)
+    @patch("src.severity._load_attempted", True)
+    def test_unknown_when_model_not_available(self):
+        text = "The weather has been nice today."
+        assert MongoDBClient.classify_severity(text) == "unknown"
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_batch_classification(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["crisis"]
+        result = MongoDBClient.classify_severity("I feel stressed and also want to kill myself.")
+        assert result == "crisis"
+
+    @patch("src.severity._inference")
+    @patch("src.severity._load_attempted", True)
+    def test_case_handled_by_model(self, mock_inference):
+        mock_inference.predict_severity.return_value = ["severe"]
+        text = "I feel DESPERATE and overwhelmed"
+        assert MongoDBClient.classify_severity(text) == "severe"
+
+
 # cli parser
 class TestBuildParser:
 

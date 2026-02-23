@@ -1,0 +1,158 @@
+# continuous integration pipeline for calmai
+# runs on push to main and on pull requests
+# tests all three components: data-pipeline, backend, frontend
+
+name: CI
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.10"
+  NODE_VERSION: "20"
+
+jobs:
+  # data-pipeline tests (322 tests)
+  data-pipeline:
+    name: Data Pipeline Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: data-pipeline
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: data-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov pytest-asyncio
+
+      - name: Run tests
+        env:
+          MONGODB_URI: "mongodb://localhost:27017"
+          GEMINI_API_KEY: "test-key"
+          EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+        run: pytest tests/ -v --tb=short --cov=src --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-pipeline-coverage
+          path: data-pipeline/coverage.xml
+
+  # backend tests (144 tests)
+  backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          MONGODB_URI: "mongodb://localhost:27017"
+          JWT_SECRET: "test-secret-key-for-ci"
+          GEMINI_API_KEY: "test-key"
+          FRONTEND_URL: "http://localhost:3000"
+        run: pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+
+  # frontend tests (175 tests) + build
+  frontend:
+    name: Frontend Tests & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  # docker build validation (airflow image)
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [data-pipeline, backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Airflow image
+        working-directory: data-pipeline
+        run: docker build -t calmai-airflow:ci .
+
+  # summary job — gates the pipeline
+  ci-pass:
+    name: CI Pass
+    runs-on: ubuntu-latest
+    needs: [data-pipeline, backend, frontend, docker]
+    if: always()
+
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.data-pipeline.result }}" != "success" ] || \
+             [ "${{ needs.backend.result }}" != "success" ] || \
+             [ "${{ needs.frontend.result }}" != "success" ] || \
+             [ "${{ needs.docker.result }}" != "success" ]; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
+          echo "All CI checks passed"

@@ -127,9 +127,10 @@ export default function DashboardLayout({
 
         <Separator />
 
-        {/* Profile + Collapse */}
-        <div className="flex items-center justify-between border-t p-3">
-          <div className="flex items-center gap-3 overflow-hidden">
+        {/* profile + account actions */}
+        <div className="space-y-2 border-t p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3 overflow-hidden">
             <Avatar className="h-8 w-8 shrink-0">
               <AvatarFallback className="text-xs">{initials}</AvatarFallback>
             </Avatar>
@@ -139,23 +140,35 @@ export default function DashboardLayout({
                   {therapist?.name ?? "Therapist"}
                 </p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {therapist?.specialization ?? ""}
+                    {therapist?.email ?? ""}
                 </p>
               </div>
             )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setCollapsed(!collapsed)}
+            >
+              {collapsed ? (
+                <ChevronRight className="h-4 w-4" />
+              ) : (
+                <ChevronLeft className="h-4 w-4" />
+              )}
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={() => setCollapsed(!collapsed)}
-          >
-            {collapsed ? (
-              <ChevronRight className="h-4 w-4" />
-            ) : (
-              <ChevronLeft className="h-4 w-4" />
-            )}
-          </Button>
+
+          {!collapsed && (
+            <div className="rounded-lg border bg-muted/40 px-2 py-1.5">
+              <p className="truncate text-[11px] text-muted-foreground">
+                {therapist?.practiceName || therapist?.specialization || "Therapist account"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">
+                {(therapist?.patientIds?.length ?? 0).toLocaleString()} linked patients
+              </p>
+            </div>
+          )}
         </div>
       </aside>
 

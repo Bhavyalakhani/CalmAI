@@ -95,6 +95,11 @@ async function apiFetch<T>(
     throw new ApiError(res.status, detail);
   }
 
+  // handle no-content responses (e.g. 204 DELETE)
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+
   return res.json();
 }
 
@@ -138,6 +143,8 @@ export interface LoginResponse {
   accessToken: string;
   refreshToken: string;
   token_type: string;
+  access_token?: string;
+  refresh_token?: string;
 }
 
 export interface SignupPayload {
@@ -160,7 +167,7 @@ export async function login(
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  setTokens(data.accessToken || (data as any).access_token, data.refreshToken || (data as any).refresh_token);
+  setTokens(data.accessToken || data.access_token || "", data.refreshToken || data.refresh_token || "");
   return data;
 }
 
@@ -169,12 +176,53 @@ export async function signup(payload: SignupPayload): Promise<LoginResponse> {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  setTokens(data.accessToken || (data as any).access_token, data.refreshToken || (data as any).refresh_token);
+  setTokens(data.accessToken || data.access_token || "", data.refreshToken || data.refresh_token || "");
   return data;
 }
 
 export async function getMe(): Promise<Therapist | Patient> {
   return apiFetch("/auth/me");
+}
+
+// profile update api
+
+export interface ProfileUpdatePayload {
+  name?: string;
+  specialization?: string;
+  practiceName?: string;
+}
+
+export async function updateProfile(
+  payload: ProfileUpdatePayload
+): Promise<Therapist | Patient> {
+  return apiFetch("/auth/profile", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+// notification preferences api
+
+export interface NotificationPrefs {
+  emailNotifications: boolean;
+  journalAlerts: boolean;
+  weeklyDigest: boolean;
+}
+
+export async function updateNotifications(
+  prefs: NotificationPrefs
+): Promise<{ message: string }> {
+  return apiFetch("/auth/notifications", {
+    method: "PATCH",
+    body: JSON.stringify(prefs),
+  });
+}
+
+// account deletion api
+
+export async function deleteAccount(): Promise<void> {
+  await apiFetch("/auth/account", { method: "DELETE" });
+  clearTokens();
 }
 
 export function logout() {
@@ -271,6 +319,14 @@ export async function fetchConversations(params?: {
   if (params?.pageSize) searchParams.set("pageSize", String(params.pageSize));
   const qs = searchParams.toString();
   return apiFetch(`/conversations${qs ? `?${qs}` : ""}`);
+}
+
+export async function fetchConversationTopics(): Promise<{ topics: { label: string; count: number }[] }> {
+  return apiFetch("/conversations/topics");
+}
+
+export async function fetchConversationSeverities(): Promise<{ severities: { label: string; count: number }[] }> {
+  return apiFetch("/conversations/severities");
 }
 
 // analytics api

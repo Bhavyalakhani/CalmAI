@@ -15,7 +15,7 @@ backend/
 │   │   ├── user.py          # UserCreate, UserLogin, TokenResponse, TherapistResponse, PatientResponse
 │   │   ├── journal.py       # JournalCreate, JournalEntryResponse, JournalSubmitResponse
 │   │   ├── conversation.py  # ConversationResponse, ConversationListResponse
-│   │   ├── analytics.py     # ThemeDistribution, EntryFrequency, DateRange, PatientAnalyticsResponse
+│   │   ├── analytics.py     # TopicDistribution, TopicOverTime, RepresentativeEntry, EntryFrequency, DateRange, PatientAnalyticsResponse
 │   │   ├── dashboard.py     # DashboardStats, TrendDataPoint
 │   │   ├── invite.py        # InviteCodeResponse, InviteCodeCreate
 │   │   └── rag.py           # RAGQuery, RAGResult, RAGResponse, ConversationMessage
@@ -26,7 +26,7 @@ backend/
 │   └── routers/
 │       ├── auth.py          # POST /auth/signup (invite code validation), POST /auth/login, GET /auth/me, POST /auth/refresh
 │       ├── patients.py      # GET /patients, GET /patients/{id}, POST /patients/invite, GET /patients/invites (therapist-only)
-│       ├── journals.py      # GET /journals, POST /journals (writes to incoming_journals)
+│       ├── journals.py      # GET /journals, POST /journals (writes to incoming_journals, lazy-loads TopicModelInference for topic classification)
 │       ├── conversations.py # GET /conversations (paginated, filterable, therapist-only)
 │       ├── analytics.py     # GET /analytics/{patient_id}
 │       ├── dashboard.py     # GET /dashboard/stats, GET /dashboard/mood-trend/{patient_id} (therapist-only)
@@ -34,14 +34,14 @@ backend/
 ├── tests/
 │   ├── conftest.py          # MockDatabase, AsyncCursorMock, fixtures (mock_db, therapist_client, patient_client)
 │   ├── test_app.py          # 3 tests (startup, health check)
-│   ├── test_auth.py         # 18 tests (login, signup, me, refresh, invite code validation)
+│   ├── test_auth.py         # 36 tests (login, signup, me, refresh, invite code validation)
 │   ├── test_auth_service.py # 12 tests (hash, verify, JWT encode/decode)
-│   ├── test_patients.py     # 16 tests (list, get, invite generation, invite listing)
+│   ├── test_patients.py     # 15 tests (list, get, invite generation, invite listing)
 │   ├── test_journals.py     # 11 tests
-│   ├── test_conversations.py# 7 tests
-│   ├── test_analytics.py    # 8 tests
+│   ├── test_conversations.py# 13 tests (paginated, topic/severity filters)
+│   ├── test_analytics.py    # 21 tests (topic distribution, topics over time, representative entries, model version)
 │   ├── test_dashboard.py    # 7 tests
-│   └── test_search.py       # 23 tests (RAG, conversation history, theme detection)
+│   └── test_search.py       # 26 tests (RAG, conversation history, topic detection)
 ├── requirements.txt
 └── pytest.ini
 ```
@@ -62,7 +62,7 @@ backend/
 | GET | `/journals` | Bearer | List journals (patients see own, therapists see their patients') |
 | POST | `/journals` | Patient | Submit new journal entry → `incoming_journals` staging collection |
 | GET | `/conversations` | Therapist | Paginated conversation list (topic, severity, search filters) |
-| GET | `/analytics/{patient_id}` | Bearer | Patient analytics (theme distribution, frequency, etc.) |
+| GET | `/analytics/{patient_id}` | Bearer | Patient analytics (topicDistribution, topicsOverTime, representativeEntries, modelVersion, frequency, etc.) |
 | GET | `/dashboard/stats` | Therapist | Aggregate counts (patients, journals, conversations, active) |
 | GET | `/dashboard/mood-trend/{id}` | Therapist | Mood data points over last N days |
 | POST | `/search/rag` | Therapist | RAG search - vector search + Gemini answer generation |
@@ -132,11 +132,34 @@ Code config: `INVITE_CODE_LENGTH = 8`, `INVITE_CODE_EXPIRY_DAYS = 7`, max 10 col
 4. DAG 2 preprocesses, validates, embeds, stores to `rag_vectors` + `journals`
 5. DAG 2 updates `patient_analytics` and marks entries as processed
 
+## Topic Classification (BERTopic)
+
+The journals router (`routers/journals.py`) lazy-loads `TopicModelInference(model_type="journals")` from the data-pipeline's `src/topic_modeling/` module. When a patient fetches journals, each entry is classified with BERTopic-discovered topics. If the model is unavailable (not trained yet or import error), entries are returned as "unclassified".
+
+## Patient Analytics Schema
+
+The `patient_analytics` MongoDB collection (populated by Airflow DAG 2) stores per-patient analytics documents:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `patient_id` | string (unique) | Patient identifier |
+| `total_entries` | int | Total journal entries |
+| `topic_distribution` | list | `{topicId, label, keywords, percentage, count}` per topic |
+| `topics_over_time` | list | `{period, topicId, label, count}` per time period |
+| `representative_entries` | list | `{topicId, label, journalId, content, similarity}` per topic |
+| `avg_word_count` | float | Average words per entry |
+| `entry_frequency` | dict | Counts by month (`YYYY-MM` keys) |
+| `date_range` | dict | `{first, last, span_days}` |
+| `model_version` | string | BERTopic model version or `"unavailable"` |
+| `computed_at` | datetime | When analytics were computed |
+
+The `GET /analytics/{patient_id}` endpoint returns these fields as `topicDistribution`, `topicsOverTime`, `representativeEntries`, and `modelVersion` (camelCase).
+
 ## Testing
 
-108 tests across 10 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
+144 tests across 10 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
 
 ```bash
-pytest tests/ -v            # 108 tests
+pytest tests/ -v            # 144 tests
 pytest tests/ -v --cov      # with coverage
 ```

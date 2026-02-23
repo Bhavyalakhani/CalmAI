@@ -1,5 +1,6 @@
 # conversations router — list and search conversations
 # therapist-only endpoints, reads from conversations collection
+# supports dynamic bertopic topic labels and bertopic severity classification
 
 import logging
 from fastapi import APIRouter, Depends, Query
@@ -24,6 +25,38 @@ def _doc_to_conversation(doc: dict) -> ConversationResponse:
         responseWordCount=doc.get("response_word_count", 0),
         sourceFile=doc.get("source_file", ""),
     )
+
+
+@router.get("/topics")
+async def list_topics(
+    current_user: dict = Depends(require_role("therapist")),
+    db: Database = Depends(get_db),
+):
+    """list unique topic labels with counts. therapist-only."""
+    pipeline = [
+        {"$match": {"topic": {"$ne": None}}},
+        {"$group": {"_id": "$topic", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    results = await db.conversations.aggregate(pipeline).to_list(length=200)
+    topics = [{"label": r["_id"], "count": r["count"]} for r in results]
+    return {"topics": topics}
+
+
+@router.get("/severities")
+async def list_severities(
+    current_user: dict = Depends(require_role("therapist")),
+    db: Database = Depends(get_db),
+):
+    """list unique severity levels with counts. therapist-only."""
+    pipeline = [
+        {"$match": {"severity": {"$ne": None}}},
+        {"$group": {"_id": "$severity", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    results = await db.conversations.aggregate(pipeline).to_list(length=20)
+    severities = [{"label": r["_id"], "count": r["count"]} for r in results]
+    return {"severities": severities}
 
 
 @router.get("", response_model=ConversationListResponse)

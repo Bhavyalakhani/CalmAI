@@ -44,33 +44,59 @@ async def _resolve_pipeline_ids(user_ids: list[str], db: Database) -> list[str]:
         pass
     return pipeline_ids
 
-# theme keywords for classifying submitted journals (same as data-pipeline)
-THEME_KEYWORDS = {
-    "anxiety": ["anxious", "anxiety", "worry", "worried", "nervous", "panic", "fear", "stressed", "overwhelmed", "restless"],
-    "depression": ["depressed", "depression", "sad", "hopeless", "empty", "numb", "worthless", "tired", "exhausted", "crying"],
-    "positive": ["happy", "grateful", "thankful", "proud", "accomplished", "hopeful", "calm", "peaceful", "better", "progress"],
-    "negative": ["angry", "frustrated", "upset", "annoyed", "irritated", "resentful", "bitter", "hurt", "lonely", "isolated"],
-    "therapy": ["therapy", "therapist", "session", "counselor", "treatment", "coping", "technique", "exercise", "homework", "progress"],
-    "sleep": ["sleep", "insomnia", "nightmare", "dream", "restless", "tired", "fatigue", "awake", "bedtime", "nap"],
-    "social": ["friend", "family", "relationship", "social", "people", "conversation", "support", "group", "partner", "colleague"],
-    "work": ["work", "job", "career", "boss", "coworker", "deadline", "project", "office", "meeting", "performance"],
-}
+# lazy-loaded topic model inference (singleton)
+_topic_inference = None
+_topic_inference_loaded = False
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
+def _get_topic_inference():
+    """lazy-load the journal topic model for real-time classification.
+    returns None if model is not available (themes will be unclassified)."""
+    global _topic_inference, _topic_inference_loaded
+    if _topic_inference_loaded:
+        return _topic_inference
+    _topic_inference_loaded = True
+    try:
+        from pathlib import Path
+        import sys
+        # add data-pipeline src to path for topic_modeling imports
+        dp_src = Path(__file__).resolve().parents[3] / "data-pipeline" / "src"
+        if str(dp_src) not in sys.path:
+            sys.path.insert(0, str(dp_src))
+        from topic_modeling.inference import TopicModelInference
+        inf = TopicModelInference(model_type="journals")
+        if inf.load():
+            _topic_inference = inf
+            logger.info("Journal topic model loaded for real-time classification")
+        else:
+            logger.info("Journal topic model not available, themes will be unclassified")
+    except Exception as e:
+        logger.warning(f"Could not load topic model: {e}, themes will be unclassified")
+    return _topic_inference
+
+
 def _classify_themes(text: str) -> list[str]:
-    """keyword-based theme classification"""
-    text_lower = text.lower()
-    matched = []
-    for theme, keywords in THEME_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            matched.append(theme)
-    return matched if matched else ["unclassified"]
+    """classify journal text into topics using trained bertopic model.
+    returns unclassified if model is not available."""
+    inf = _get_topic_inference()
+    if inf is not None:
+        try:
+            result = inf.predict_single(text)
+            if result and result.get("topic_id", -1) != -1:
+                label = result.get("label", "")
+                if label:
+                    return [label]
+        except Exception:
+            pass
+
+    return ["unclassified"]
 
 
-def _doc_to_journal(doc: dict) -> JournalEntryResponse:
-    """convert a mongodb journal document to response model"""
+async def _doc_to_journal(doc: dict, db: Database | None = None) -> JournalEntryResponse:
+    """convert a mongodb journal document to response model.
+    if themes are missing and BERTopic classifies them, persist back to db."""
     journal_id = doc.get("journal_id", str(doc.get("_id", "")))
 
     # parse entry_date
@@ -78,10 +104,19 @@ def _doc_to_journal(doc: dict) -> JournalEntryResponse:
     if entry_date and not isinstance(entry_date, str):
         entry_date = str(entry_date)
 
-    # get themes — either from doc or classify from content
+    # get themes - either from doc or classify once and persist
     themes = doc.get("themes", [])
     if not themes and doc.get("content"):
         themes = _classify_themes(doc["content"])
+        # persist so we never re-classify this journal
+        if db is not None and doc.get("_id"):
+            try:
+                await db.journals.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"themes": themes}},
+                )
+            except Exception:
+                pass  # non-critical, will retry next request
 
     # day of week mapping
     day_of_week = doc.get("day_of_week")
@@ -150,7 +185,7 @@ async def list_journals(
     cursor = db.journals.find(query).sort("entry_date", -1).skip(skip).limit(limit)
     journals = []
     async for doc in cursor:
-        journals.append(_doc_to_journal(doc))
+        journals.append(await _doc_to_journal(doc, db))
 
     return journals
 

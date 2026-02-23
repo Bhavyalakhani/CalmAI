@@ -224,7 +224,8 @@ def embedding_service():
 @pytest.fixture
 def analytics():
     from analytics.patient_analytics import PatientAnalytics
-    return PatientAnalytics()
+    pa = PatientAnalytics()
+    return pa
 
 
 @pytest.fixture

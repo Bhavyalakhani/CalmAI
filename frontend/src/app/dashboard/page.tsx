@@ -148,7 +148,7 @@ function ThemeBar({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <span className="w-28 shrink-0 text-sm capitalize text-muted-foreground">
+      <span className="w-44 shrink-0 text-sm capitalize text-muted-foreground" title={theme}>
         {theme}
       </span>
       <div className="flex-1">
@@ -242,12 +242,6 @@ function PatientItem({
           {analytics?.totalEntries ?? 0} entries
         </p>
       </div>
-      {analytics && analytics.totalEntries > 0 && (
-        <Badge variant="outline" className="shrink-0 max-w-[100px] truncate text-[10px]">
-          <Activity className="mr-1 h-3 w-3 shrink-0" />
-          <span className="truncate">{analytics.themeDistribution[0]?.theme}</span>
-        </Badge>
-      )}
     </button>
   );
 }
@@ -302,6 +296,14 @@ function RAGAssistantPanel({
   const [answer, setAnswer] = useState<string | null>(null);
   const [sourceCount, setSourceCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  // clear results when patient changes
+  useEffect(() => {
+    setQuery("");
+    setAnswer(null);
+    setSourceCount(0);
+    setError(null);
+  }, [selectedPatientId]);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -441,7 +443,7 @@ function DashboardSkeleton() {
           </Card>
         ))}
       </div>
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
         <Card>
           <CardContent className="pt-6">
             {[...Array(5)].map((_, i) => (
@@ -449,7 +451,10 @@ function DashboardSkeleton() {
             ))}
           </CardContent>
         </Card>
-        <Skeleton className="h-64" />
+        <div className="space-y-4">
+          <Skeleton className="h-64" />
+          <Skeleton className="h-32" />
+        </div>
       </div>
     </div>
   );
@@ -576,34 +581,36 @@ export default function DashboardOverview() {
       </div>
 
       {/* main grid */}
-      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        {/* patient list */}
-        <Card className="lg:row-span-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium">Patients</CardTitle>
-            <CardDescription>
-              {patients.length} active patients
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="px-2">
-            <ScrollArea className="max-h-[540px]">
-              <div className="space-y-0.5 px-1">
-                {patients.map((patient) => (
-                  <PatientItem
-                    key={patient.id}
-                    patient={patient}
-                    isSelected={patient.id === selectedPatientId}
-                    onClick={() => setSelectedPatientId(patient.id)}
-                    analytics={analyticsMap[patient.id] ?? null}
-                  />
-                ))}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+      <div className="flex gap-6">
+        {/* patient list sidebar */}
+        <div className="hidden w-[240px] shrink-0 lg:block">
+          <Card className="flex h-full flex-col">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium">Patients</CardTitle>
+              <CardDescription>
+                {patients.length} active patients
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1 overflow-hidden px-2">
+              <ScrollArea className="h-full">
+                <div className="space-y-0.5 px-1">
+                  {patients.map((patient) => (
+                    <PatientItem
+                      key={patient.id}
+                      patient={patient}
+                      isSelected={patient.id === selectedPatientId}
+                      onClick={() => setSelectedPatientId(patient.id)}
+                      analytics={analyticsMap[patient.id] ?? null}
+                    />
+                  ))}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* right column */}
-        <div className="space-y-6">
+        <div className="min-w-0 flex-1 space-y-6">
           {/* patient analytics */}
           {selectedPatient && selectedAnalytics && (
             <Card>
@@ -628,18 +635,18 @@ export default function DashboardOverview() {
               </CardHeader>
               <CardContent>
                 <div className="grid gap-6 sm:grid-cols-2">
-                  {/* theme distribution */}
+                  {/* topic distribution */}
                   <div className="space-y-3">
                     <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                      Theme Distribution
+                      Topic Distribution
                     </h4>
                     <div className="space-y-2">
-                      {selectedAnalytics.themeDistribution
+                      {selectedAnalytics.topicDistribution
                         .slice(0, 6)
                         .map((t) => (
                           <ThemeBar
-                            key={t.theme}
-                            theme={t.theme}
+                            key={t.topicId}
+                            theme={t.label}
                             percentage={t.percentage}
                           />
                         ))}
@@ -676,18 +683,18 @@ export default function DashboardOverview() {
                           Span (days)
                         </div>
                       </div>
-                      <div className="rounded-lg border p-3 text-center">
-                        <div className="text-lg font-bold capitalize">
-                          {selectedAnalytics.themeDistribution[0]?.theme ?? "-"}
+                      <div className="rounded-lg border p-3 text-center" title={selectedAnalytics.topicDistribution[0]?.label}>
+                        <div className="text-sm font-bold capitalize break-words leading-tight">
+                          {selectedAnalytics.topicDistribution[0]?.label ?? "-"}
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          Top theme
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          Top topic
                         </div>
                       </div>
                     </div>
 
                     {/* entry frequency */}
-                    <div>
+                    <div className="pt-2 mt-2 border-t">
                       <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                         Monthly Frequency
                       </h4>

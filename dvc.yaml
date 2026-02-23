@@ -62,8 +62,13 @@ stages:
       - src/bias_detection/conversation_bias.py
       - src/bias_detection/slicer.py
       - data/processed/conversations/processed_conversations.parquet
+      - models/bertopic_conversations/
+      - models/bertopic_severity/
     outs:
       - reports/bias/conversation_bias_report.json
+      - reports/bias/topic_distribution.png
+      - reports/bias/severity_distribution.png
+      - reports/bias/response_length_by_topic.png
 
   bias_journals:
     wdir: data-pipeline
@@ -72,8 +77,12 @@ stages:
       - src/bias_detection/journal_bias.py
       - src/bias_detection/slicer.py
       - data/processed/journals/processed_journals.parquet
+      - models/bertopic_journals/
     outs:
       - reports/bias/journal_bias_report.json
+      - reports/bias/journal_theme_distribution.png
+      - reports/bias/journal_entries_by_day.png
+      - reports/bias/journal_entries_by_month.png
 
   embed_conversations:
     wdir: data-pipeline
@@ -92,3 +101,81 @@ stages:
       - data/processed/journals/processed_journals.parquet
     outs:
       - data/processed/journals/embedded_journals.parquet
+
+  train_journal_model:
+    wdir: data-pipeline
+    cmd: >-
+      python -c "
+      import pandas as pd, numpy as np;
+      from src.topic_modeling.trainer import TopicModelTrainer;
+      from src.topic_modeling.config import TopicModelConfig;
+      from src.topic_modeling.validation import TopicModelValidator;
+      cfg = TopicModelConfig(model_type='journals');
+      trainer = TopicModelTrainer(cfg);
+      df = pd.read_parquet('data/processed/journals/embedded_journals.parquet');
+      docs, ts = trainer.prepare_journal_docs(df);
+      emb = np.array(df['embedding'].tolist()) if 'embedding' in df.columns else None;
+      result = trainer.train(docs, embeddings=emb, timestamps=ts);
+      trainer.save_model();
+      v = TopicModelValidator(); r = v.validate(result); v.save_report(r)
+      "
+    deps:
+      - src/topic_modeling/trainer.py
+      - src/topic_modeling/config.py
+      - src/topic_modeling/validation.py
+      - data/processed/journals/embedded_journals.parquet
+    outs:
+      - models/bertopic_journals/:
+          persist: true
+
+  train_conversation_model:
+    wdir: data-pipeline
+    cmd: >-
+      python -c "
+      import pandas as pd, numpy as np;
+      from src.topic_modeling.trainer import TopicModelTrainer;
+      from src.topic_modeling.config import TopicModelConfig;
+      from src.topic_modeling.validation import TopicModelValidator;
+      cfg = TopicModelConfig(model_type='conversations');
+      trainer = TopicModelTrainer(cfg);
+      df = pd.read_parquet('data/processed/conversations/embedded_conversations.parquet');
+      docs, _ = trainer.prepare_conversation_docs(df);
+      emb = np.array(df['embedding'].tolist()) if 'embedding' in df.columns else None;
+      result = trainer.train(docs, embeddings=emb);
+      trainer.save_model();
+      v = TopicModelValidator(); r = v.validate(result); v.save_report(r)
+      "
+    deps:
+      - src/topic_modeling/trainer.py
+      - src/topic_modeling/config.py
+      - src/topic_modeling/validation.py
+      - data/processed/conversations/embedded_conversations.parquet
+    outs:
+      - models/bertopic_conversations/:
+          persist: true
+
+  train_severity_model:
+    wdir: data-pipeline
+    cmd: >-
+      python -c "
+      import pandas as pd, numpy as np;
+      from src.topic_modeling.trainer import TopicModelTrainer;
+      from src.topic_modeling.config import TopicModelConfig;
+      from src.topic_modeling.validation import TopicModelValidator;
+      cfg = TopicModelConfig(model_type='severity');
+      trainer = TopicModelTrainer(cfg);
+      df = pd.read_parquet('data/processed/conversations/embedded_conversations.parquet');
+      docs, _ = trainer.prepare_conversation_docs(df);
+      emb = np.array(df['embedding'].tolist()) if 'embedding' in df.columns else None;
+      result = trainer.train(docs, embeddings=emb);
+      trainer.save_model();
+      v = TopicModelValidator(); r = v.validate(result); v.save_report(r)
+      "
+    deps:
+      - src/topic_modeling/trainer.py
+      - src/topic_modeling/config.py
+      - src/topic_modeling/validation.py
+      - data/processed/conversations/embedded_conversations.parquet
+    outs:
+      - models/bertopic_severity/:
+          persist: true
