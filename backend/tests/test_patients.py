@@ -1,7 +1,8 @@
-# tests for patients router — list, get, and invite code endpoints
+# tests for patients router — list, get, invite code, and remove endpoints
 # therapist-only endpoints
 
 import pytest
+from bson import ObjectId
 from tests.conftest import PATIENT_ID, PATIENT_2_ID, THERAPIST_ID
 
 
@@ -160,4 +161,83 @@ class TestListInviteCodes:
 
     async def test_patient_cannot_list_invites(self, patient_client):
         resp = await patient_client.get("/patients/invites")
+        assert resp.status_code == 403
+
+
+class TestRemovePatient:
+    """therapist removes a patient and all their data"""
+
+    async def test_remove_patient_success(self, therapist_client, mock_db):
+        # seed some patient data
+        mock_db.journals._data.append({
+            "_id": ObjectId(), "journal_id": "j999", "patient_id": PATIENT_ID,
+            "content": "test", "entry_date": "2025-06-10",
+        })
+        mock_db.rag_vectors._data.append({
+            "_id": ObjectId(), "patient_id": PATIENT_ID, "content": "vec",
+        })
+        mock_db.prompts._data.append({
+            "_id": ObjectId(), "patient_id": PATIENT_ID, "text": "prompt",
+        })
+
+        users_before = len(mock_db.users._data)
+        resp = await therapist_client.delete(f"/patients/{PATIENT_ID}")
+        assert resp.status_code == 204
+
+        # patient user doc removed
+        assert len(mock_db.users._data) == users_before - 1
+        remaining_ids = [str(d["_id"]) for d in mock_db.users._data]
+        assert PATIENT_ID not in remaining_ids
+
+    async def test_remove_patient_unlinks_from_therapist(self, therapist_client, mock_db):
+        therapist = mock_db.users._data[0]
+        assert PATIENT_ID in therapist.get("patient_ids", [])
+
+        resp = await therapist_client.delete(f"/patients/{PATIENT_ID}")
+        assert resp.status_code == 204
+
+        therapist = mock_db.users._data[0]
+        assert PATIENT_ID not in therapist.get("patient_ids", [])
+
+    async def test_remove_patient_deletes_journals(self, therapist_client, mock_db):
+        # journals collection already has 2 journals for PATIENT_ID in conftest
+        assert len(mock_db.journals._data) >= 1
+
+        resp = await therapist_client.delete(f"/patients/{PATIENT_ID}")
+        assert resp.status_code == 204
+
+        # all journals for this patient should be gone
+        patient_journals = [j for j in mock_db.journals._data if j.get("patient_id") == PATIENT_ID]
+        assert len(patient_journals) == 0
+
+    async def test_remove_patient_deletes_analytics(self, therapist_client, mock_db):
+        assert len(mock_db.patient_analytics._data) == 1
+
+        resp = await therapist_client.delete(f"/patients/{PATIENT_ID}")
+        assert resp.status_code == 204
+
+        assert len(mock_db.patient_analytics._data) == 0
+
+    async def test_remove_patient_not_found(self, therapist_client, mock_db):
+        fake_id = "507f1f77bcf86cd799439011"
+        # add to therapist's patient_ids so it passes the ownership check attempt
+        resp = await therapist_client.delete(f"/patients/{fake_id}")
+        assert resp.status_code == 404
+
+    async def test_remove_patient_not_owned(self, therapist_client, mock_db):
+        # create a patient belonging to a different therapist
+        other_patient_oid = ObjectId()
+        mock_db.users._data.append({
+            "_id": other_patient_oid,
+            "email": "other@test.com",
+            "name": "Other Patient",
+            "role": "patient",
+            "therapist_id": "some_other_therapist_id",
+        })
+
+        resp = await therapist_client.delete(f"/patients/{str(other_patient_oid)}")
+        assert resp.status_code == 403
+
+    async def test_patient_cannot_remove_patient(self, patient_client):
+        resp = await patient_client.delete(f"/patients/{PATIENT_ID}")
         assert resp.status_code == 403

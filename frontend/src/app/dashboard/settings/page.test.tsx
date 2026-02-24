@@ -73,10 +73,10 @@ describe("Dashboard settings page", () => {
     expect(screen.getByText("Pipeline run status")).toBeInTheDocument();
   });
 
-  it("renders delete confirmation input", () => {
+  it("renders delete account button in danger zone", () => {
     render(<SettingsPage />);
     expect(screen.getByText("Danger Zone")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("DELETE")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /delete account/i })).toBeInTheDocument();
   });
 
   it("calls updateProfile API on save", async () => {
@@ -99,9 +99,14 @@ describe("Dashboard settings page", () => {
 
   it("calls deleteAccount API when DELETE is typed and confirmed", async () => {
     render(<SettingsPage />);
-    const input = screen.getByPlaceholderText("DELETE");
+    // open the dialog
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Type DELETE to confirm")).toBeInTheDocument();
+    });
+    const input = screen.getByPlaceholderText("Type DELETE to confirm");
     fireEvent.change(input, { target: { value: "DELETE" } });
-    const deleteBtn = screen.getByText("Delete");
+    const deleteBtn = screen.getByText("Delete Forever");
     fireEvent.click(deleteBtn);
     await waitFor(() => {
       expect(deleteAccount).toHaveBeenCalled();
@@ -155,24 +160,31 @@ describe("Dashboard settings page", () => {
     expect(vi.mocked(updateProfile)).not.toHaveBeenCalled();
   });
 
-  it("disables delete button when DELETE is not typed", () => {
+  it("disables delete button when DELETE is not typed", async () => {
     render(<SettingsPage />);
-    const deleteBtn = screen.getByText("Delete");
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Delete Forever")).toBeInTheDocument();
+    });
+    const deleteBtn = screen.getByText("Delete Forever");
     expect(deleteBtn).toBeDisabled();
   });
 
   it("calls logout after successful account deletion", async () => {
     render(<SettingsPage />);
-    const input = screen.getByPlaceholderText("DELETE");
+    fireEvent.click(screen.getByRole("button", { name: /delete account/i }));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Type DELETE to confirm")).toBeInTheDocument();
+    });
+    const input = screen.getByPlaceholderText("Type DELETE to confirm");
     fireEvent.change(input, { target: { value: "DELETE" } });
-    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Delete Forever"));
     await waitFor(() => {
       expect(deleteAccount).toHaveBeenCalled();
     });
-    // logout is called after a 350ms setTimeout
     await waitFor(() => {
       expect(mockLogout).toHaveBeenCalled();
-    }, { timeout: 2000 });
+    });
   });
 
   it("shows pipeline status section", () => {

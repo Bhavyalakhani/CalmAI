@@ -47,7 +47,7 @@ import {
   fetchConversationTopics,
   fetchConversationSeverities,
 } from "@/lib/api";
-import type { Patient, PatientAnalytics, DashboardStats } from "@/types";
+import type { Patient, PatientAnalytics, DashboardStats, TopicOverTime } from "@/types";
 
 // topic distribution bar with full label
 
@@ -75,6 +75,146 @@ function TopicBar({
         />
       </div>
     </div>
+  );
+}
+
+// topics over time line chart with topic selector
+
+function TopicsOverTimeChart({ data }: { data: TopicOverTime[] }) {
+  const months = [...new Set(data.map((t) => t.month))].sort();
+  const topicMap = new Map<number, { label: string; freqs: Map<string, number> }>();
+  for (const t of data) {
+    if (!topicMap.has(t.topicId)) {
+      topicMap.set(t.topicId, { label: t.label, freqs: new Map() });
+    }
+    topicMap.get(t.topicId)!.freqs.set(t.month, t.frequency);
+  }
+  const allTopics = [...topicMap.entries()];
+
+  const [selectedId, setSelectedId] = useState<number | "all">("all");
+
+  const visibleTopics = selectedId === "all"
+    ? allTopics
+    : allTopics.filter(([id]) => id === selectedId);
+
+  const maxFreq = Math.max(
+    ...visibleTopics.flatMap(([, { freqs }]) => [...freqs.values()]),
+    1
+  );
+
+  const color = "#a1a1aa";
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-sm">Topics Over Time</CardTitle>
+            <CardDescription>
+              How journal topics shift month to month
+            </CardDescription>
+          </div>
+          <select
+            value={String(selectedId)}
+            onChange={(e) =>
+              setSelectedId(e.target.value === "all" ? "all" : Number(e.target.value))
+            }
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs capitalize"
+          >
+            <option value="all">All topics</option>
+            {allTopics.map(([id, { label }]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {/* y-axis + chart area */}
+        <div className="flex gap-2">
+          {/* y-axis labels */}
+          <div className="flex flex-col justify-between text-[10px] text-muted-foreground" style={{ height: 160 }}>
+            <span>{maxFreq}</span>
+            <span>{Math.round(maxFreq / 2)}</span>
+            <span>0</span>
+          </div>
+          {/* SVG line chart */}
+          <div className="relative flex-1" style={{ height: 160 }}>
+            {/* horizontal grid lines */}
+            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="border-t border-muted/40" />
+              ))}
+            </div>
+            <svg
+              viewBox={`0 0 ${Math.max(months.length - 1, 1) * 100} 100`}
+              className="h-full w-full"
+              preserveAspectRatio="none"
+            >
+              {visibleTopics.map(([topicId, { freqs }]) => {
+                const points = months.map((m, i) => {
+                  const val = freqs.get(m) ?? 0;
+                  const x = months.length === 1 ? 50 : (i / (months.length - 1)) * (months.length - 1) * 100;
+                  const y = 100 - (val / maxFreq) * 90 - 5;
+                  return `${x},${y}`;
+                });
+                return (
+                  <polyline
+                    key={topicId}
+                    points={points.join(" ")}
+                    fill="none"
+                    stroke={color}
+                    strokeWidth="2"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+              {visibleTopics.map(([topicId, { label, freqs }]) =>
+                months.map((m, i) => {
+                  const val = freqs.get(m) ?? 0;
+                  if (val === 0) return null;
+                  const cx = months.length === 1 ? 50 : (i / (months.length - 1)) * (months.length - 1) * 100;
+                  const cy = 100 - (val / maxFreq) * 90 - 5;
+                  return (
+                    <circle
+                      key={`${topicId}-${m}`}
+                      cx={cx}
+                      cy={cy}
+                      r="4"
+                      fill={color}
+                      vectorEffect="non-scaling-stroke"
+                    >
+                      <title>{label}: {val} ({m})</title>
+                    </circle>
+                  );
+                })
+              )}
+            </svg>
+          </div>
+        </div>
+        {/* x-axis labels */}
+        <div className="ml-8 mt-1 flex justify-between text-[10px] text-muted-foreground">
+          {months.map((m) => (
+            <span key={m}>{m.slice(5)}</span>
+          ))}
+        </div>
+        {/* legend for "all" mode */}
+        {selectedId === "all" && visibleTopics.length > 1 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {allTopics.map(([topicId, { label }]) => (
+              <button
+                key={topicId}
+                onClick={() => setSelectedId(topicId)}
+                className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground transition-colors hover:bg-muted"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -223,7 +363,7 @@ export default function AnalyticsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Journal Entries
+              Total Processed Entries
             </CardTitle>
             <BookOpen className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
@@ -308,7 +448,7 @@ export default function AnalyticsPage() {
                   <SelectItem key={p.id} value={p.id}>
                     <span>{p.name}</span>
                     <span className="ml-2 text-xs text-muted-foreground">
-                      ({analyticsList[p.id]?.totalEntries ?? 0} entries)
+                      ({analyticsList[p.id]?.totalEntries ?? 0} processed entries)
                     </span>
                   </SelectItem>
                 ))}
@@ -325,7 +465,7 @@ export default function AnalyticsPage() {
                     {selectedPatient?.name ?? "Patient"} — Overview
                   </CardTitle>
                   <CardDescription>
-                    {selected.totalEntries} entries over{" "}
+                    {selected.totalEntries} processed entries over{" "}
                     {selected.dateRange?.spanDays ?? 0} days
                   </CardDescription>
                 </CardHeader>
@@ -336,7 +476,7 @@ export default function AnalyticsPage() {
                         {selected.totalEntries}
                       </div>
                       <div className="text-[11px] text-muted-foreground">
-                        Total entries
+                        Processed entries
                       </div>
                     </div>
                     <div className="rounded-lg border p-3 text-center">
@@ -386,7 +526,7 @@ export default function AnalyticsPage() {
                 <CardHeader>
                   <CardTitle className="text-sm">Topic Distribution</CardTitle>
                   <CardDescription>
-                    BERTopic-discovered themes in journal entries
+                    BERTopic-discovered themes in processed entries
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="overflow-hidden">
@@ -431,7 +571,7 @@ export default function AnalyticsPage() {
                                 {ef.month}
                               </span>
                               <span className="font-medium">
-                                {ef.count} entries
+                                {ef.count} processed entries
                               </span>
                             </div>
                             <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -449,64 +589,9 @@ export default function AnalyticsPage() {
               </Card>
 
               {/* topics over time */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm">Topics Over Time</CardTitle>
-                  <CardDescription>
-                    How topic frequency changes month to month
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {selected.topicsOverTime.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      No temporal topic data available.
-                    </p>
-                  ) : (
-                    <ScrollArea className="h-[300px] pr-3">
-                      <div className="space-y-3">
-                        {(() => {
-                          // group by month
-                          const byMonth: Record<
-                            string,
-                            { label: string; frequency: number }[]
-                          > = {};
-                          for (const t of selected.topicsOverTime) {
-                            if (!byMonth[t.month]) byMonth[t.month] = [];
-                            byMonth[t.month].push({
-                              label: t.label,
-                              frequency: t.frequency,
-                            });
-                          }
-                          return Object.entries(byMonth)
-                            .sort(([a], [b]) => a.localeCompare(b))
-                            .map(([month, topics]) => (
-                              <div key={month}>
-                                <p className="mb-1.5 text-xs font-medium text-muted-foreground">
-                                  {month}
-                                </p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {topics
-                                    .sort(
-                                      (a, b) => b.frequency - a.frequency
-                                    )
-                                    .map((t) => (
-                                      <Badge
-                                        key={`${month}-${t.label}`}
-                                        variant="secondary"
-                                        className="text-[10px] capitalize"
-                                      >
-                                        {t.label} ({t.frequency})
-                                      </Badge>
-                                    ))}
-                                </div>
-                              </div>
-                            ));
-                        })()}
-                      </div>
-                    </ScrollArea>
-                  )}
-                </CardContent>
-              </Card>
+              {selected.topicsOverTime.length > 0 && (
+                <TopicsOverTimeChart data={selected.topicsOverTime} />
+              )}
 
               {/* representative entries */}
               {selected.representativeEntries.length > 0 && (
@@ -569,10 +654,10 @@ export default function AnalyticsPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm">
-                  Entries per Patient
+                  Processed Entries per Patient
                 </CardTitle>
                 <CardDescription>
-                  Total journal entries and writing volume by patient
+                  Total processed entries and writing volume by patient
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -598,7 +683,7 @@ export default function AnalyticsPage() {
                           <div className="flex items-baseline justify-between">
                             <span className="text-sm">{patient.name}</span>
                             <span className="text-xs text-muted-foreground">
-                              {entries} entries · avg {a?.avgWordCount ?? 0}{" "}
+                              {entries} processed · avg {a?.avgWordCount ?? 0}{" "}
                               words
                             </span>
                           </div>
@@ -724,7 +809,7 @@ export default function AnalyticsPage() {
                           content={
                             <ChartTooltipContent
                               formatter={(value, _name, item) =>
-                                `${value} days (${item.payload.entries} entries)`
+                                `${value} days (${item.payload.entries} processed entries)`
                               }
                             />
                           }

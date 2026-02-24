@@ -34,7 +34,9 @@ def mock_settings(tmp_path):
     s.MONGODB_DATABASE = "test_db"
     s.INCOMING_JOURNAL_MIN_LENGTH = 10
     s.INCOMING_JOURNAL_MAX_LENGTH = 10000
-    s.INCOMING_JOURNAL_BATCH_INTERVAL = "*/30 * * * *"
+    s.INCOMING_JOURNAL_BATCH_INTERVAL = "0 */12 * * *"
+    s.RETRAIN_ENTRY_THRESHOLD = 50
+    s.RETRAIN_MAX_DAYS = 7
     s.ensure_directories = Mock()
     return s
 

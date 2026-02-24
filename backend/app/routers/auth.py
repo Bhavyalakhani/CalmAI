@@ -17,6 +17,7 @@ from app.models.user import (
     PatientResponse,
     ProfileUpdate,
     NotificationPreferences,
+    PasswordChange,
 )
 from app.services.db import Database, get_db
 from app.services.auth_service import (
@@ -61,6 +62,9 @@ def _user_to_response(user: dict):
             therapistId=user.get("therapist_id", ""),
             dateOfBirth=user.get("date_of_birth"),
             onboardedAt=user.get("onboarded_at", user.get("created_at", "")),
+            therapistName=user.get("therapist_name"),
+            therapistSpecialization=user.get("therapist_specialization"),
+            therapistLicenseNumber=user.get("therapist_license_number"),
         )
 
 
@@ -224,10 +228,29 @@ async def login(body: UserLogin, db: Database = Depends(get_db)):
 
 
 @router.get("/me")
-async def get_me(current_user: dict = Depends(get_current_user)):
-    """get current authenticated user profile"""
+async def get_me(
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """get current authenticated user profile.
+    for patients, includes therapist name/specialization/license."""
     # re-add _id for the converter
     current_user["_id"] = current_user.get("id", "")
+
+    # enrich patient response with therapist info
+    if current_user.get("role") == "patient" and current_user.get("therapist_id"):
+        try:
+            therapist = await db.users.find_one(
+                {"_id": ObjectId(current_user["therapist_id"])},
+                {"name": 1, "specialization": 1, "license_number": 1},
+            )
+            if therapist:
+                current_user["therapist_name"] = therapist.get("name", "")
+                current_user["therapist_specialization"] = therapist.get("specialization", "")
+                current_user["therapist_license_number"] = therapist.get("license_number", "")
+        except Exception as e:
+            logger.warning(f"Could not fetch therapist info: {e}")
+
     return _user_to_response(current_user)
 
 
@@ -352,18 +375,121 @@ async def update_notifications(
     return {"message": "Notification preferences saved"}
 
 
+@router.patch("/password")
+async def change_password(
+    body: PasswordChange,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """change the current user's password"""
+
+    user_id = current_user.get("id", "")
+
+    # verify current password
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not verify_password(body.current_password, user.get("hashed_password", "")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    # hash and update
+    new_hash = hash_password(body.new_password)
+    try:
+        await db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"hashed_password": new_hash}},
+        )
+    except Exception as e:
+        logger.error(f"Failed to change password: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to change password",
+        )
+
+    logger.info(f"Password changed for user {user_id}")
+    return {"message": "Password changed successfully"}
+
+
+async def _cascade_delete_patient(patient_id: str, db: Database):
+    """delete all data associated with a patient across all collections.
+    called by both self-delete (DELETE /auth/account) and therapist-delete (DELETE /patients/{id})."""
+
+    # get pipeline_patient_id if it exists
+    pipeline_id = patient_id
+    try:
+        user = await db.users.find_one(
+            {"_id": ObjectId(patient_id)},
+            {"pipeline_patient_id": 1},
+        )
+        if user and user.get("pipeline_patient_id"):
+            pipeline_id = user["pipeline_patient_id"]
+    except Exception:
+        pass
+
+    id_filter = {"patient_id": {"$in": [patient_id, pipeline_id]}}
+
+    # delete journals
+    try:
+        r = await db.journals.delete_many(id_filter)
+        logger.info(f"Deleted {r.deleted_count} journals for patient {patient_id}")
+    except Exception as e:
+        logger.warning(f"Could not delete journals: {e}")
+
+    # delete incoming journals
+    try:
+        r = await db.incoming_journals.delete_many(id_filter)
+        logger.info(f"Deleted {r.deleted_count} incoming journals for patient {patient_id}")
+    except Exception as e:
+        logger.warning(f"Could not delete incoming journals: {e}")
+
+    # delete rag vectors
+    try:
+        r = await db.rag_vectors.delete_many(id_filter)
+        logger.info(f"Deleted {r.deleted_count} rag vectors for patient {patient_id}")
+    except Exception as e:
+        logger.warning(f"Could not delete rag vectors: {e}")
+
+    # delete patient analytics
+    try:
+        await db.patient_analytics.delete_one({"patient_id": {"$in": [patient_id, pipeline_id]}})
+    except Exception as e:
+        logger.warning(f"Could not delete patient analytics: {e}")
+
+    # delete prompts
+    try:
+        await db.prompts.delete_many({"patient_id": patient_id})
+    except Exception as e:
+        logger.warning(f"Could not delete prompts: {e}")
+
+    # clean up invite codes (mark unused so code can theoretically be reused)
+    try:
+        await db.invite_codes.update_many(
+            {"used_by": patient_id},
+            {"$set": {"is_used": False, "used_by": None}},
+        )
+    except Exception as e:
+        logger.warning(f"Could not clean up invite codes: {e}")
+
+
 @router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_account(
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_db),
 ):
-    """permanently delete the current user's account"""
+    """permanently delete the current user's account and all associated data"""
 
     user_id = current_user.get("id", "")
     role = current_user.get("role", "")
 
-    # unlink patient from therapist
+    # cascade delete all patient data
     if role == "patient":
+        await _cascade_delete_patient(user_id, db)
+
+        # unlink from therapist
         therapist_id = current_user.get("therapist_id", "")
         if therapist_id:
             try:
@@ -374,7 +500,7 @@ async def delete_account(
             except Exception as e:
                 logger.warning(f"Could not unlink patient from therapist: {e}")
 
-    # for therapists, unlink all patients
+    # for therapists, unlink all patients (but don't delete their accounts)
     if role == "therapist":
         try:
             await db.users.update_many(

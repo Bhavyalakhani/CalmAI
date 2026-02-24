@@ -41,7 +41,7 @@ Patient writes journal entry
 Backend writes to incoming_journals (staging)
         │
         ▼
-Airflow DAG 2 (every 30 min)
+Airflow DAG 2 (every 12 hours)
 ├── Preprocess & validate entry
 ├── Generate embeddings (384-dim)
 ├── Store in rag_vectors + journals
@@ -97,7 +97,7 @@ CalmAI/
 │   │   ├── analytics/      #     Per-patient analytics computation
 │   │   ├── topic_modeling/  #    BERTopic training, inference, validation, MLflow tracking
 │   │   └── alerts/         #     Email notifications for DAG completion
-│   ├── tests/              #   322 pytest tests across 15 files
+│   ├── tests/              #   338 pytest tests across 15 files
 │   ├── models/             #   BERTopic model artifacts (safetensors)
 │   ├── mlruns/             #   MLflow experiment tracking (local)
 │   ├── configs/            #   Configuration and patient profiles
@@ -105,11 +105,11 @@ CalmAI/
 │   ├── reports/            #   Bias and schema validation reports
 │   ├── docker-compose.yaml #   Full Airflow cluster (6 containers)
 │   ├── Dockerfile          #   Custom Airflow image
-│   └── run_pipeline.py     #   Local runner (no Airflow)
+│   └── run_calm_ai_pipeline.py     #   Local batch pipeline runner (DAG 1)
 │
 ├── frontend/               # Web application
 │   ├── src/
-│   │   ├── app/            #   Next.js App Router (15 routes)
+│   │   ├── app/            #   Next.js App Router (14 routes)
 │   │   │   ├── page.tsx            # Landing page
 │   │   │   ├── login/              # Login page
 │   │   │   ├── signup/             # 2-step signup (role selection → form, invite code for patients)
@@ -126,7 +126,7 @@ CalmAI/
 │   │   │       ├── insights/       #   BERTopic analytics - topic distribution, frequency charts
 │   │   │       ├── prompts/        #   Therapist prompts & responses
 │   │   │       └── settings/       #   Patient profile & privacy
-│   │   ├── components/ui/  #   shadcn/ui components (20+)
+│   │   ├── components/ui/  #   shadcn/ui components (22)
 │   │   ├── lib/            #   API client, auth context, utilities
 │   │   └── types/          #   TypeScript domain types
 │   ├── vitest.config.ts    #   Vitest configuration (jsdom, React)
@@ -134,10 +134,10 @@ CalmAI/
 │
 ├── backend/                # API server
 │   ├── app/                #   FastAPI app (main, config, dependencies, seed)
-│   │   ├── models/         #   Pydantic schemas (user, journal, conversation, analytics, dashboard, invite, rag)
-│   │   ├── routers/        #   7 routers: auth, patients, journals, conversations, analytics, dashboard, search
+│   │   ├── models/         #   Pydantic schemas (user, journal, conversation, analytics, dashboard, invite, prompt, rag)
+│   │   ├── routers/        #   8 routers: auth, patients, journals, conversations, analytics, dashboard, search, prompts
 │   │   └── services/       #   db (Motor), auth_service (JWT/bcrypt), rag_service (LangChain)
-│   └── tests/              #   111 pytest tests across 10 files
+│   └── tests/              #   173 pytest tests across 11 files
 │
 ├── dvc.yaml                # DVC pipeline stages (wdir: data-pipeline)
 ├── .dvc/config             # DVC remote storage config (GCS)
@@ -178,7 +178,8 @@ cp .env.example data-pipeline/.env
 # Edit data-pipeline/.env (adds Airflow, Postgres, SMTP settings for Docker)
 
 # Option A: Run locally
-python run_pipeline.py
+cd data-pipeline
+python run_calm_ai_pipeline.py
 
 # Option B: Run with Airflow (Docker)
 docker compose build
@@ -242,7 +243,7 @@ The data pipeline handles the complete data lifecycle including model training:
 | **Bias Detection** | BERTopic-based topic/severity analysis with visualizations and underrepresentation flagging |
 | **Patient Analytics** | Per-patient topic distribution, frequency, trends, representative entries |
 | **Storage** | MongoDB Atlas with unified `rag_vectors` collection for vector search |
-| **Orchestration** | 2 Airflow DAGs — batch pipeline (23 tasks) + incoming journal micro-batch (10 tasks, every 30 min) |
+| **Orchestration** | 2 Airflow DAGs — batch pipeline (23 tasks) + incoming journal micro-batch (11 tasks, every 12 hours) |
 | **Experiment Tracking** | MLflow local file-backed — logs hyperparameters, metrics, model artifacts per training run |
 | **Versioning** | DVC with GCS remote for full artifact reproducibility |
 
@@ -267,23 +268,24 @@ See [data-pipeline/src/topic_modeling/README.md](data-pipeline/src/topic_modelin
 
 ### Backend
 
-FastAPI REST API with 17 endpoints, JWT auth, role-based access, and LangChain RAG.
+FastAPI REST API with 29 endpoints, JWT auth, role-based access, and LangChain RAG.
 
 | Area | Description |
 |---|---|
-| **Auth** | Signup (invite code for patients), login, token refresh, profile retrieval |
-| **Patients** | List, get by ID, generate invite codes, list invite codes |
-| **Journals** | List (role-aware), create (writes to staging for Airflow DAG 2) |
-| **Conversations** | Paginated list with topic/severity/search filters |
+| **Auth** | Signup (invite code for patients), login, token refresh, profile, notifications, password, account deletion |
+| **Patients** | List, get by ID, delete, generate invite codes, list invite codes |
+| **Journals** | List (role-aware), create (writes to staging for Airflow DAG 2), edit, delete |
+| **Conversations** | Paginated list with topic/severity/search filters, distinct topics, distinct severities |
 | **Analytics** | Per-patient BERTopic topic distribution, frequency, date range, representative entries |
 | **Dashboard** | Aggregate stats, mood trend data |
-| **RAG Search** | Chat-style assistant with conversation history, vector search + Gemini LLM |
+| **RAG Search** | Chat-style assistant with conversation history, intent routing, vector search + Gemini LLM |
+| **Prompts** | Create therapist prompts, list pending/all, patient responses |
 
 See [backend/README.md](backend/README.md) for full API reference.
 
 ### Frontend
 
-Next.js 16 application with 15 routes, dark theme, and 175 Vitest tests.
+Next.js 16 application with 14 routes, dark theme, and 199 Vitest tests.
 
 | Area | Routes | Description |
 |---|---|---|
@@ -302,7 +304,7 @@ Next.js 16 application with 15 routes, dark theme, and 175 Vitest tests.
 | | `/journal/settings` | Patient profile, linked therapist, privacy notice |
 
 **Key design decisions:**
-- Dark zinc theme via shadcn/ui (20+ components including Dialog for invite codes)
+- Dark zinc theme via shadcn/ui (22 components including Dialog for invite codes)
 - Collapsible sidebar for therapist dashboard, top nav for patient journal
 - API client (`src/lib/api.ts`) with typed fetch wrappers for all backend endpoints
 - Auth context (`src/lib/auth-context.tsx`) with JWT token management, role-based redirect
@@ -313,9 +315,9 @@ Next.js 16 application with 15 routes, dark theme, and 175 Vitest tests.
 | Layer | Technologies |
 |---|---|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Recharts, Lucide Icons, react-markdown |
-| Frontend Testing | Vitest 4, React Testing Library, jsdom (175 tests across 18 files) |
+| Frontend Testing | Vitest 4, React Testing Library, jsdom (199 tests across 18 files) |
 | Backend | FastAPI, Motor (async MongoDB), python-jose (JWT), passlib (bcrypt), pydantic-settings |
-| Backend Testing | pytest, pytest-asyncio, httpx (144 tests across 10 files) |
+| Backend Testing | pytest, pytest-asyncio, httpx (173 tests across 11 files) |
 | RAG | LangChain (langchain-google-genai, langchain-huggingface, langchain-mongodb), sentence-transformers |
 | Data Pipeline | Python, Pandas, NumPy, Apache Airflow, Docker Compose |
 | Topic Modeling | BERTopic (>=0.17.0), Gemini LLM labeling, UMAP, HDBSCAN |
@@ -324,23 +326,23 @@ Next.js 16 application with 15 routes, dark theme, and 175 Vitest tests.
 | LLM | Google Gemini API (`gemini-2.5-flash`) |
 | Storage | MongoDB Atlas (vector search + raw collections + staging + analytics) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Pipeline Testing | pytest (322 tests across 15 files, mocked external services) |
+| Pipeline Testing | pytest (338 tests across 15 files, mocked external services) |
 | CI/CD | GitHub Actions (lint, test, build, Docker validation) |
 
 ## Testing
 
-641 tests across all three components:
+710 tests across all three components:
 
 ```bash
-# data pipeline (322 tests across 15 files)
+# data pipeline (338 tests across 15 files)
 cd data-pipeline
 pytest tests/ -v --cov
 
-# backend (144 tests across 10 files)
+# backend (173 tests across 11 files)
 cd backend
 pytest tests/ -v --cov
 
-# frontend (175 tests across 18 files)
+# frontend (199 tests across 18 files)
 cd frontend
 npm test
 npm run test:coverage
@@ -354,9 +356,9 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull
 
 | Job | Description |
 |---|---|
-| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 322 pytest tests |
-| **Backend Tests** | Python 3.10, installs dependencies, runs 144 pytest tests |
-| **Frontend Tests & Build** | Node 20, lint, 175 Vitest tests, production build |
+| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 338 pytest tests |
+| **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests |
+| **Frontend Tests & Build** | Node 20, lint, 199 Vitest tests, production build |
 | **Docker Build** | Validates the Airflow Docker image builds successfully |
 | **CI Pass** | Gates the pipeline — fails if any job fails |
 

@@ -46,6 +46,10 @@ class TestMoodTrend:
         resp = await therapist_client.get(f"/dashboard/mood-trend/{PATIENT_ID}?days=30")
         assert resp.status_code == 200
 
-    async def test_patient_cannot_access_mood_trend(self, patient_client):
+    async def test_patient_can_access_own_mood_trend(self, patient_client):
         resp = await patient_client.get(f"/dashboard/mood-trend/{PATIENT_ID}")
+        assert resp.status_code == 200
+
+    async def test_patient_cannot_access_other_mood_trend(self, patient_client):
+        resp = await patient_client.get(f"/dashboard/mood-trend/{PATIENT_2_ID}")
         assert resp.status_code == 403

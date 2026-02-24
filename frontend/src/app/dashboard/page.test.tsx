@@ -65,7 +65,7 @@ describe("Dashboard overview page", () => {
     render(<DashboardPage />);
     await waitFor(() => {
       expect(screen.getByText("Total Patients")).toBeInTheDocument();
-      expect(screen.getByText("Journal Entries")).toBeInTheDocument();
+      expect(screen.getByText("Processed Entries")).toBeInTheDocument();
       expect(screen.getByText("Conversations")).toBeInTheDocument();
       expect(screen.getByText("Active Patients")).toBeInTheDocument();
     });

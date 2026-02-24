@@ -10,6 +10,7 @@ import type {
   TrendDataPoint,
   RAGResponse,
   Conversation,
+  TherapistPrompt,
 } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -225,6 +226,12 @@ export async function deleteAccount(): Promise<void> {
   clearTokens();
 }
 
+// patient removal (therapist only)
+
+export async function removePatient(patientId: string): Promise<void> {
+  await apiFetch(`/patients/${patientId}`, { method: "DELETE" });
+}
+
 export function logout() {
   clearTokens();
   if (typeof window !== "undefined") {
@@ -287,11 +294,35 @@ export async function fetchJournals(params?: {
 
 export async function submitJournal(
   content: string,
-  mood?: number
+  mood?: number,
+  promptId?: string
 ): Promise<{ journalId: string; message: string }> {
+  const body: Record<string, unknown> = { content };
+  if (mood !== undefined) body.mood = mood;
+  if (promptId) body.promptId = promptId;
   return apiFetch("/journals", {
     method: "POST",
-    body: JSON.stringify({ content, mood }),
+    body: JSON.stringify(body),
+  });
+}
+
+// journal edit and delete
+
+export async function editJournal(
+  journalId: string,
+  updates: { content?: string; mood?: number }
+): Promise<{ message: string }> {
+  return apiFetch(`/journals/${journalId}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deleteJournal(
+  journalId: string
+): Promise<void> {
+  return apiFetch(`/journals/${journalId}`, {
+    method: "DELETE",
   });
 }
 
@@ -369,5 +400,43 @@ export async function ragSearch(params: {
       sourceType: params.sourceType,
       conversationHistory: params.conversationHistory,
     }),
+  });
+}
+
+// prompts api
+
+export async function fetchPrompts(
+  patientId: string,
+  promptStatus?: "pending" | "responded"
+): Promise<TherapistPrompt[]> {
+  const qs = promptStatus ? `?status=${promptStatus}` : "";
+  return apiFetch(`/prompts/${patientId}${qs}`);
+}
+
+export async function fetchAllPrompts(
+  patientId: string
+): Promise<TherapistPrompt[]> {
+  return apiFetch(`/prompts/${patientId}/all`);
+}
+
+export async function createPrompt(
+  patientId: string,
+  promptText: string
+): Promise<TherapistPrompt> {
+  return apiFetch("/prompts", {
+    method: "POST",
+    body: JSON.stringify({ patientId, promptText }),
+  });
+}
+
+// password change api
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<{ message: string }> {
+  return apiFetch("/auth/password", {
+    method: "PATCH",
+    body: JSON.stringify({ currentPassword, newPassword }),
   });
 }

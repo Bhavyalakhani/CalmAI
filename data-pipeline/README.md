@@ -52,7 +52,7 @@ All clinical judgment stays with human therapists - the system surfaces informat
 │                                             │ MongoDB  │◄┤ Store │          │
 │                                             │  Atlas   │ └───┬───┘          │
 │  DAG 2: incoming_journals_pipeline          │(6 colls) │     │              │
-│  (*/30 * * * *, incremental append)         │          │     ▼              │
+│  (0 */12 * * *, incremental append)         │          │     ▼              │
 │  ┌─────┐ ┌──────┐ ┌────┐ ┌─────┐ ┌─────┐   │          │ ┌───────┐          │
 │  │Fetch├►│Prepro├►│Val.├►│Embed├►│Store├──►│          │ │ Email │          │
 │  └─────┘ └──────┘ └────┘ └─────┘ └──┬──┘   └──────────┘ └───────┘          │
@@ -82,7 +82,7 @@ External Services:
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (322 tests, 15 test files) |
+| Testing | pytest (338 tests, 15 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -231,10 +231,22 @@ For development and debugging without Docker/Airflow:
 
 ```bash
 cd data-pipeline
-python run_pipeline.py
+
+# batch pipeline (DAG 1) — full acquire → preprocess → validate → embed → train → store
+python run_calm_ai_pipeline.py
+
+# incoming journals pipeline (DAG 2) — micro-batch processing
+python run_incoming_pipeline.py               # process unprocessed entries
+python run_incoming_pipeline.py --seed         # seed test entries + process
+python run_incoming_pipeline.py --seed-only    # only seed test entries
+python run_incoming_pipeline.py --verify-only  # just check db state
+python run_incoming_pipeline.py --force-retrain # force model retrain
+python run_incoming_pipeline.py --skip-retrain  # skip retrain check
 ```
 
-This runs all 14 pipeline steps sequentially with timing:
+#### Batch Pipeline (`run_calm_ai_pipeline.py`)
+
+Runs all 14 pipeline steps sequentially with timing:
 
 | Step | Description |
 |---|---|
@@ -255,6 +267,10 @@ This runs all 14 pipeline steps sequentially with timing:
 
 At the end, a summary table shows duration per step and the total runtime.
 
+#### Incoming Pipeline (`run_incoming_pipeline.py`)
+
+Mirrors Airflow DAG 2 locally. Fetches unprocessed journals from `incoming_journals`, preprocesses, validates, embeds, stores to MongoDB, conditionally retrains BERTopic models, updates per-patient analytics, and marks entries as processed. Supports seeding test entries for development and a `--verify-only` mode to inspect current DB state without processing.
+
 ---
 
 ## Code Structure
@@ -267,7 +283,7 @@ data-pipeline/
 │
 ├── dags/
 │   ├── calm_ai_pipeline.py          # DAG 1 - batch pipeline (manual trigger)
-│   └── incoming_journals_pipeline.py # DAG 2 - incoming journals (*/30 * * * *)
+│   └── incoming_journals_pipeline.py # DAG 2 - incoming journals (0 */12 * * *)
 │
 ├── src/
 │   ├── acquisition/
@@ -309,7 +325,7 @@ data-pipeline/
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 322 tests across 15 files
+├── tests/                           # 338 tests across 15 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
@@ -351,7 +367,8 @@ data-pipeline/
 ├── docker-compose.yaml              # Full Airflow cluster definition
 ├── Dockerfile                       # Custom Airflow image
 ├── requirements.txt                 # Python dependencies
-├── run_pipeline.py                  # Local pipeline runner (no Airflow)
+├── run_calm_ai_pipeline.py          # Local batch pipeline runner (DAG 1, no Airflow)
+├── run_incoming_pipeline.py         # Local incoming pipeline runner (DAG 2, no Airflow)
 └── .env.example                     # Environment variable template
 ```
 
@@ -419,24 +436,26 @@ start
 
 ### DAG 2 - Incoming Journals (`incoming_journals_pipeline`)
 
-**Trigger**: Every 30 minutes | **Mode**: Incremental append
+**Trigger**: Every 12 hours | **Mode**: Incremental append
 
 ```
 start → fetch_new_entries → preprocess_entries → validate_entries → embed_entries
-  → store_to_mongodb → update_analytics → mark_processed → success_email → end
+  → store_to_mongodb → conditional_retrain → update_analytics → mark_processed → success_email → end
 ```
 
 Uses a `ShortCircuitOperator` - if no new journal entries are found in MongoDB, the entire DAG run is skipped.
+
+The `conditional_retrain` task checks whether BERTopic models need retraining based on two thresholds: 50+ new journal entries accumulated since last training (`RETRAIN_ENTRY_THRESHOLD`) or 7+ days since last training (`RETRAIN_MAX_DAYS`). If either condition is met, all 3 BERTopic models (journals, conversations, severity) are retrained from the full corpus in MongoDB and logged to MLflow. Training metadata is persisted via `MongoDBClient.save_training_metadata()` in `pipeline_metadata` (with `type: "training_metadata"`). First run always saves baseline metadata.
 
 Overview — Incoming Journals Pipeline
 
 The `incoming_journals_pipeline` is a compact, sequential micro-batch DAG that incrementally ingests new journal entries from the `incoming_journals` staging collection and updates the primary stores and per-patient analytics. Key behaviors and conventions:
 
-- Tasks: `start` → `fetch_new_entries` → `preprocess_entries` → `validate_entries` → `embed_entries` → `store_to_mongodb` → `update_analytics` → `mark_processed` → `success_email`.
+- Tasks: `start` → `fetch_new_entries` → `preprocess_entries` → `validate_entries` → `embed_entries` → `store_to_mongodb` → `conditional_retrain` → `update_analytics` → `mark_processed` → `success_email`.
 - In-memory preprocessing: `preprocess_entries` applies the same preprocessing and temporal feature engineering used by the batch pipeline but operates on the runtime records (no parquet I/O). It uses XCOM to pass the data to the tasks forward.
 - XCom conventions: tasks push `duration` (float seconds) for runtime telemetry; `start` pushes a `run_id` (timestamp format YYYYMMDD_HHMMSS); `fetch_new_entries` pushes `journal_count`; embedding and storage tasks push sanitized, JSON-safe records and insert metrics.
 - Safety: before pushing to XCom, non-JSON-native types (pandas Timestamps, numpy scalars/arrays) are converted to ISO strings, Python primitives or lists to ensure Airflow's JSON XCom serialization works reliably.
-- Notifications and auditing: `store_to_mongodb` records run metadata and collection stats in `pipeline_metadata`; `success_email` sends a concise run summary (durations, counts, insert results) to the configured recipients.
+- Notifications and auditing: `store_to_mongodb` records run metadata and collection stats in `pipeline_metadata`; `success_email` sends a concise run summary (durations, counts, insert results, retrain status) to the configured recipients.
 
 The pipeline is intentionally sequential and idempotent for the micro-batch use case — `max_active_runs=1` prevents overlapping runs and `mark_processed` records prevent reprocessing of the same entries.
 
@@ -608,7 +627,7 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (322 tests)
+### Test Summary (338 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
@@ -619,14 +638,14 @@ pytest tests/test_embedding.py -v
 | `test_preprocessing.py` | 2 | Cross-preprocessor integration tests |
 | `test_schema_validator.py` | 32 | All expectation types, pass/fail reporting, incoming validation |
 | `test_slicer.py` | 17 | Data slicing, threshold detection |
-| `test_conversation_bias.py` | 19 | Topic classification, severity, visualizations |
-| `test_journal_bias.py` | 20 | Theme classification, temporal analysis |
+| `test_conversation_bias.py` | 21 | Topic classification, severity, visualizations |
+| `test_journal_bias.py` | 22 | Theme classification, temporal analysis |
 | `test_embedding.py` | 19 | Embedding generation, batch processing, incoming |
-| `test_storage.py` | 24 | MongoDB CRUD, batch inserts, indexes, stats |
-| `test_analytics.py` | 5 | Patient topic classification, analytics computation |
-| `test_incoming_pipeline.py` | 19 | Validation, staging, analytics |
-| `test_topic_modeling.py` | — | BERTopic trainer, inference, validation |
-| `test_topic_bias.py` | — | Topic-based bias analysis using BERTopic |
+| `test_storage.py` | 32 | MongoDB CRUD, batch inserts, indexes, incoming, training metadata |
+| `test_analytics.py` | 31 | Patient topic classification, analytics computation, frequency, date range |
+| `test_incoming_pipeline.py` | 29 | Fetch, preprocess, validate, embed, store, retrain, mark processed |
+| `test_topic_modeling.py` | 58 | BERTopic trainer, inference, validation, MLflow tracking |
+| `test_topic_bias.py` | 17 | Topic-based bias analysis using BERTopic |
 | `conftest.py` | - | Shared fixtures, mock settings, sample DataFrames |
 
 All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers) are mocked in tests.
@@ -649,8 +668,11 @@ cd data-pipeline
 cp .env.example .env
 # Edit .env with your API keys and MongoDB URI
 
-# 3a. Run locally
-python run_pipeline.py
+# 3a. Run locally (batch pipeline)
+python run_calm_ai_pipeline.py
+
+# 3a-alt. Run incoming journals pipeline
+python run_incoming_pipeline.py
 
 # 3b. OR run with Docker/Airflow
 docker compose build
@@ -681,7 +703,7 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
 - [ ] BERTopic models saved to `models/bertopic_journals/`, `models/bertopic_conversations/`, and `models/bertopic_severity/`
 - [ ] MLflow experiments tracked in `mlruns/`
-- [ ] All 322 tests passing (`pytest tests/ -v`)
+- [ ] All 338 tests passing (`pytest tests/ -v`)
 
 ---
 

@@ -9,6 +9,7 @@ import type {
   DashboardStats,
   TrendDataPoint,
   Conversation,
+  TherapistPrompt,
 } from "@/types";
 
 // auth users
@@ -31,6 +32,9 @@ export const mockPatient: Patient = {
   name: "Alex Rivera",
   role: "patient",
   therapistId: "t-001",
+  therapistName: "Dr. Sarah Chen",
+  therapistSpecialization: "Cognitive Behavioral Therapy",
+  therapistLicenseNumber: "PSY-2024-11892",
   dateOfBirth: "1995-03-15",
   onboardedAt: "2024-01-15T00:00:00Z",
   createdAt: "2024-01-15T00:00:00Z",
@@ -259,5 +263,43 @@ export const mockConversations: Conversation[] = [
     contextWordCount: 17,
     responseWordCount: 18,
     sourceFile: "dataset_1",
+  },
+];
+
+// prompts
+
+export const mockPrompts: TherapistPrompt[] = [
+  {
+    promptId: "pr-001",
+    therapistId: "t-001",
+    therapistName: "Dr. Sarah Chen",
+    patientId: "p-001",
+    promptText: "This week, try writing about one moment where you noticed your anxiety and how you responded to it.",
+    createdAt: "2025-02-18T10:00:00Z",
+    status: "pending",
+  },
+  {
+    promptId: "pr-002",
+    therapistId: "t-001",
+    therapistName: "Dr. Sarah Chen",
+    patientId: "p-001",
+    promptText: "Reflect on a positive interaction you had this week. What made it meaningful?",
+    createdAt: "2025-02-11T10:00:00Z",
+    status: "responded",
+    responseJournalId: "j-003",
+    responseContent: "Had a great chat with a friend today. Felt really connected.",
+    respondedAt: "2025-02-12T14:00:00Z",
+  },
+  {
+    promptId: "pr-003",
+    therapistId: "t-001",
+    therapistName: "Dr. Sarah Chen",
+    patientId: "p-001",
+    promptText: "Write about your sleep patterns this past week. What helped or hindered your rest?",
+    createdAt: "2025-02-04T10:00:00Z",
+    status: "responded",
+    responseJournalId: "j-004",
+    responseContent: "Therapy session was really helpful. We talked about coping strategies.",
+    respondedAt: "2025-02-06T09:00:00Z",
   },
 ];

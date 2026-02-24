@@ -474,8 +474,8 @@ class SchemaValidator:
 
         # entry_date should not be in the future
         if "entry_date" in df.columns:
-            dates = pd.to_datetime(df["entry_date"], errors="coerce")
-            future_count = int((dates > pd.Timestamp.now()).sum())
+            dates = pd.to_datetime(df["entry_date"], errors="coerce", utc=True)
+            future_count = int((dates > pd.Timestamp.now(tz="UTC")).sum())
             results.append(ExpectationResult(
                 name="entry_date_not_future",
                 success=bool(future_count == 0),

@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { mockPatient, mockAnalytics } from "@/__tests__/mock-api-data";
+import { mockPatient, mockAnalytics, mockMoodTrend, mockJournals } from "@/__tests__/mock-api-data";
 
 vi.mock("@/lib/auth-context", () => ({
   useAuth: () => ({
@@ -30,14 +30,18 @@ vi.mock("@/lib/auth-context", () => ({
 
 vi.mock("@/lib/api", () => ({
   fetchAnalytics: vi.fn(),
+  fetchMoodTrend: vi.fn(),
+  fetchJournals: vi.fn(),
 }));
 
-import { fetchAnalytics } from "@/lib/api";
+import { fetchAnalytics, fetchMoodTrend, fetchJournals } from "@/lib/api";
 import InsightsPage from "@/app/journal/insights/page";
 
 describe("Journal insights page", () => {
   beforeEach(() => {
     vi.mocked(fetchAnalytics).mockResolvedValue(mockAnalytics);
+    vi.mocked(fetchMoodTrend).mockResolvedValue(mockMoodTrend);
+    vi.mocked(fetchJournals).mockResolvedValue(mockJournals);
   });
 
   it("renders without crashing", () => {
@@ -60,11 +64,73 @@ describe("Journal insights page", () => {
     });
   });
 
-  it("shows total entries stat", async () => {
+  it("shows processed entries stat", async () => {
     render(<InsightsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Total Entries")).toBeInTheDocument();
+      expect(screen.getByText("Processed Entries")).toBeInTheDocument();
       expect(screen.getByText("47")).toBeInTheDocument();
+    });
+  });
+
+  it("shows writing streak stat", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Writing Streak")).toBeInTheDocument();
+    });
+  });
+
+  it("shows mood trend section with average", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Mood Trend (30 days)")).toBeInTheDocument();
+      // avg of mockMoodTrend: (3+5+3+2+4+4+4)/7 = 3.6
+      expect(screen.getByText("3.6")).toBeInTheDocument();
+    });
+  });
+
+  it("shows topic distribution section", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Topic Distribution")).toBeInTheDocument();
+      expect(screen.getAllByText("anxiety & stress").length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("shows topics over time section", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Topics Over Time")).toBeInTheDocument();
+    });
+  });
+
+  it("shows representative entries section", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Representative Entries")).toBeInTheDocument();
+      expect(screen.getByText("feeling very anxious today")).toBeInTheDocument();
+    });
+  });
+
+  it("shows monthly writing frequency", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Monthly Writing Frequency")).toBeInTheDocument();
+    });
+  });
+
+  it("shows avg words stat", async () => {
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("Avg. Words")).toBeInTheDocument();
+      expect(screen.getByText("24")).toBeInTheDocument();
+    });
+  });
+
+  it("shows no data message when analytics is null", async () => {
+    vi.mocked(fetchAnalytics).mockResolvedValue(null as unknown as typeof mockAnalytics);
+    render(<InsightsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("No analytics data available.")).toBeInTheDocument();
     });
   });
 });

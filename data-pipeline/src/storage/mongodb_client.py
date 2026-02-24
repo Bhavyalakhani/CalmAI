@@ -412,7 +412,9 @@ class MongoDBClient:
         logger.info(f"Marked {result.modified_count} journals as processed")
 
     def insert_incoming_journals(self, df: pd.DataFrame) -> Dict[str, int]:
-        """append incoming journals to rag_vectors and journals (no clear)"""
+        """append incoming journals to rag_vectors and journals (no clear).
+        uses upsert for journals to handle edits + retries without duplicates.
+        deletes existing rag_vectors before inserting to prevent stale embeddings."""
         self.connect()
 
         required = ["journal_id", "patient_id", "embedding", "content"]
@@ -421,7 +423,7 @@ class MongoDBClient:
             raise ValueError(f"Missing required columns: {missing}")
 
         vector_docs = []
-        raw_docs = []
+        raw_upsert_count = 0
 
         for _, row in df.iterrows():
             r = row.to_dict()
@@ -448,10 +450,12 @@ class MongoDBClient:
                     "patient_id": r["patient_id"],
                     "therapist_id": r.get("therapist_id"),
                     "entry_date": entry_date,
+                    "prompt_id": r.get("prompt_id"),
+                    "mood": r.get("mood"),
                 },
             })
 
-            raw_docs.append({
+            raw_doc = {
                 "journal_id": r["journal_id"],
                 "patient_id": r["patient_id"],
                 "therapist_id": r.get("therapist_id"),
@@ -468,14 +472,35 @@ class MongoDBClient:
                 "days_since_last": r.get("days_since_last", 0),
                 "embedding_text": r.get("embedding_text", ""),
                 "is_embedded": True,
+                "prompt_id": r.get("prompt_id"),
+                "mood": r.get("mood"),
+            }
+
+            # upsert into journals to prevent duplicates on edits and retries
+            try:
+                self.journals.update_one(
+                    {"journal_id": r["journal_id"]},
+                    {"$set": raw_doc},
+                    upsert=True,
+                )
+                raw_upsert_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to upsert journal {r['journal_id']}: {e}")
+
+        # remove existing rag_vectors for these journals before re-inserting
+        # (prevents duplicates on edits and dag retries)
+        journal_ids = df["journal_id"].tolist()
+        if journal_ids:
+            self.rag_vectors.delete_many({
+                "journal_id": {"$in": journal_ids},
+                "doc_type": "journal",
             })
 
         logger.info(f"Appending {len(df)} incoming journals to MongoDB...")
         vec_count = self._batch_insert(self.rag_vectors, vector_docs)
-        raw_count = self._batch_insert(self.journals, raw_docs)
 
-        logger.info(f"Appended {vec_count} vector docs, {raw_count} raw journal docs")
-        return {"rag_vectors": vec_count, "journals": raw_count}
+        logger.info(f"Upserted {raw_upsert_count} journal docs, inserted {vec_count} vector docs")
+        return {"rag_vectors": vec_count, "journals": raw_upsert_count}
 
     # conversation classification (topic + severity)
 
@@ -592,6 +617,28 @@ class MongoDBClient:
         self.connect()
         self.pipeline_metadata.insert_one(run_data)
         logger.info(f"Logged pipeline run: {run_data.get('run_id', 'unknown')}")
+
+    def get_last_training_metadata(self) -> Optional[Dict[str, Any]]:
+        """get the most recent training metadata from pipeline_metadata.
+        returns None if no training has been recorded yet."""
+        self.connect()
+        doc = self.pipeline_metadata.find_one(
+            {"type": "training_metadata"},
+            sort=[("trained_at", -1)],
+        )
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def save_training_metadata(self, metadata: Dict[str, Any]):
+        """save training metadata (entry counts, timestamp) for conditional retrain checks"""
+        self.connect()
+        self.pipeline_metadata.insert_one({
+            "type": "training_metadata",
+            **metadata,
+        })
+        logger.info(f"Saved training metadata: journal_count={metadata.get('journal_count')}, "
+                     f"conversation_count={metadata.get('conversation_count')}")
 
     def get_collection_stats(self) -> Dict[str, int]:
         self.connect()

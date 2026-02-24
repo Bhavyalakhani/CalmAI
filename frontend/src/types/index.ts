@@ -27,6 +27,9 @@ export interface Patient extends User {
   therapistId: string;
   dateOfBirth?: string;
   onboardedAt: string;
+  therapistName?: string;
+  therapistSpecialization?: string;
+  therapistLicenseNumber?: string;
 }
 
 // journal
@@ -44,6 +47,7 @@ export interface JournalEntry {
   sentenceCount: number;
   avgWordLength: number;
   mood?: MoodScore;
+  promptId?: string;
   dayOfWeek: string;
   weekNumber: number;
   month: number;
@@ -170,4 +174,21 @@ export interface RAGResponse {
   results: RAGResult[];
   generatedAnswer?: string;
   sources: string[];
+}
+
+// therapist prompts
+
+export type PromptStatus = "pending" | "responded";
+
+export interface TherapistPrompt {
+  promptId: string;
+  therapistId: string;
+  therapistName: string;
+  patientId: string;
+  promptText: string;
+  createdAt: string;
+  status: PromptStatus;
+  responseJournalId?: string;
+  responseContent?: string;
+  respondedAt?: string;
 }

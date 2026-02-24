@@ -15,7 +15,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { mockPatient, mockJournals, mockMoodTrend } from "@/__tests__/mock-api-data";
+import { mockPatient, mockJournals, mockMoodTrend, mockPrompts, mockAnalytics } from "@/__tests__/mock-api-data";
 
 vi.mock("@/lib/auth-context", () => ({
   useAuth: () => ({
@@ -32,17 +32,23 @@ vi.mock("@/lib/auth-context", () => ({
 vi.mock("@/lib/api", () => ({
   fetchJournals: vi.fn(),
   fetchMoodTrend: vi.fn(),
+  fetchAnalytics: vi.fn(),
   submitJournal: vi.fn(),
+  fetchPrompts: vi.fn(),
+  editJournal: vi.fn(),
+  deleteJournal: vi.fn(),
 }));
 
-import { fetchJournals, fetchMoodTrend, submitJournal } from "@/lib/api";
+import { fetchJournals, fetchMoodTrend, fetchAnalytics, submitJournal, fetchPrompts } from "@/lib/api";
 import JournalPage from "@/app/journal/page";
 
 describe("Journal page", () => {
   beforeEach(() => {
     vi.mocked(fetchJournals).mockResolvedValue(mockJournals);
     vi.mocked(fetchMoodTrend).mockResolvedValue(mockMoodTrend);
+    vi.mocked(fetchAnalytics).mockResolvedValue(mockAnalytics);
     vi.mocked(submitJournal).mockResolvedValue({ journalId: "j-new", message: "Entry saved successfully!" });
+    vi.mocked(fetchPrompts).mockResolvedValue(mockPrompts.filter((p) => p.status === "pending"));
   });
 
   it("renders without crashing", () => {
@@ -81,6 +87,7 @@ describe("Journal page", () => {
     });
 
     await user.type(screen.getByPlaceholderText("Start writing..."), "Today was a great day");
+    await user.click(screen.getByTitle("Good"));
 
     const btn = screen.getByText("Save Entry").closest("button");
     expect(btn).not.toBeDisabled();
@@ -96,13 +103,13 @@ describe("Journal page", () => {
 
     await user.type(screen.getByPlaceholderText("Start writing..."), "Hello world today");
 
-    expect(screen.getByText("3 words")).toBeInTheDocument();
+    expect(screen.getByText("3/500 words")).toBeInTheDocument();
   });
 
   it("shows 0 words when textarea is empty", async () => {
     render(<JournalPage />);
     await waitFor(() => {
-      expect(screen.getByText("0 words")).toBeInTheDocument();
+      expect(screen.getByText("0/500 words")).toBeInTheDocument();
     });
   });
 
@@ -153,7 +160,7 @@ describe("Journal page", () => {
     render(<JournalPage />);
     await waitFor(() => {
       expect(screen.getByText("Your Stats")).toBeInTheDocument();
-      expect(screen.getByText("Total entries")).toBeInTheDocument();
+      expect(screen.getByText("Processed entries")).toBeInTheDocument();
     });
   });
 
@@ -161,6 +168,36 @@ describe("Journal page", () => {
     render(<JournalPage />);
     await waitFor(() => {
       expect(screen.getByText("From Your Therapist")).toBeInTheDocument();
+    });
+  });
+
+  it("shows pending prompt text from API", async () => {
+    render(<JournalPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/one moment where you noticed your anxiety/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows search bar for entries", async () => {
+    render(<JournalPage />);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Search entries...")).toBeInTheDocument();
+    });
+  });
+
+  it("shows date filter inputs", async () => {
+    render(<JournalPage />);
+    await waitFor(() => {
+      const dateInputs = screen.getAllByDisplayValue("");
+      // there should be date inputs rendered (type="date")
+      expect(dateInputs.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows refresh button in timeline header", async () => {
+    render(<JournalPage />);
+    await waitFor(() => {
+      expect(screen.getByTitle("Refresh")).toBeInTheDocument();
     });
   });
 
@@ -174,6 +211,7 @@ describe("Journal page", () => {
     });
 
     await user.type(screen.getByPlaceholderText("Start writing..."), "Test content here");
+    await user.click(screen.getByTitle("Good"));
     await user.click(screen.getByText("Save Entry"));
 
     expect(screen.getByText("Saving...")).toBeInTheDocument();

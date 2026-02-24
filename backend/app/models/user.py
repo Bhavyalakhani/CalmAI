@@ -73,6 +73,9 @@ class PatientResponse(UserResponse):
     therapist_id: str = Field("", alias="therapistId")
     date_of_birth: Optional[str] = Field(None, alias="dateOfBirth")
     onboarded_at: str = Field("", alias="onboardedAt")
+    therapist_name: Optional[str] = Field(None, alias="therapistName")
+    therapist_specialization: Optional[str] = Field(None, alias="therapistSpecialization")
+    therapist_license_number: Optional[str] = Field(None, alias="therapistLicenseNumber")
 
     model_config = {"populate_by_name": True}
 
@@ -93,5 +96,14 @@ class NotificationPreferences(BaseModel):
     email_notifications: bool = Field(True, alias="emailNotifications")
     journal_alerts: bool = Field(True, alias="journalAlerts")
     weekly_digest: bool = Field(True, alias="weeklyDigest")
+
+    model_config = {"populate_by_name": True}
+
+
+# password change
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(..., alias="currentPassword", min_length=1)
+    new_password: str = Field(..., alias="newPassword", min_length=8)
 
     model_config = {"populate_by_name": True}

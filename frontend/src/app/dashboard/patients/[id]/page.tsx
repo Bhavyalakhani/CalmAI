@@ -1,5 +1,5 @@
 // patient profile page - therapist view of a single patient
-// shows patient info, analytics, and full journal timeline with filters
+// shows patient info, analytics, full journal timeline with filters, and prompts
 
 "use client";
 
@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -27,6 +28,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
   ArrowLeft,
   Calendar,
   Mail,
@@ -35,18 +44,27 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  MessageSquare,
+  Send,
+  Loader2,
+  Plus,
+  UserX,
 } from "lucide-react";
 import {
   fetchPatient,
   fetchAnalytics,
   fetchJournals,
   fetchMoodTrend,
+  fetchAllPrompts,
+  createPrompt,
+  removePatient,
 } from "@/lib/api";
 import type {
   Patient,
   PatientAnalytics,
   JournalEntry,
   TrendDataPoint,
+  TherapistPrompt,
 } from "@/types";
 
 const PAGE_SIZE = 20;
@@ -60,7 +78,18 @@ export default function PatientProfilePage() {
   const [analytics, setAnalytics] = useState<PatientAnalytics | null>(null);
   const [journals, setJournals] = useState<JournalEntry[]>([]);
   const [moodTrend, setMoodTrend] = useState<TrendDataPoint[]>([]);
+  const [prompts, setPrompts] = useState<TherapistPrompt[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // prompt dialog
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false);
+  const [newPromptText, setNewPromptText] = useState("");
+  const [sendingPrompt, setSendingPrompt] = useState(false);
+
+  // remove patient dialog
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
 
   // filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -75,17 +104,19 @@ export default function PatientProfilePage() {
 
     const loadData = async () => {
       try {
-        const [patientData, analyticsData, journalData, moodData] =
+        const [patientData, analyticsData, journalData, moodData, promptData] =
           await Promise.all([
             fetchPatient(patientId),
             fetchAnalytics(patientId).catch(() => null),
             fetchJournals({ patientId, limit: 200 }),
             fetchMoodTrend(patientId, 30).catch(() => []),
+            fetchAllPrompts(patientId).catch(() => []),
           ]);
         setPatient(patientData);
         setAnalytics(analyticsData);
         setAllJournals(journalData);
         setMoodTrend(moodData);
+        setPrompts(promptData);
       } catch (err) {
         console.error("failed to load patient profile:", err);
       } finally {
@@ -162,21 +193,142 @@ export default function PatientProfilePage() {
     .map((n) => n[0])
     .join("");
 
+  const handleSendPrompt = async () => {
+    if (!newPromptText.trim()) return;
+    setSendingPrompt(true);
+    try {
+      const created = await createPrompt(patientId, newPromptText);
+      setPrompts((prev) => [created, ...prev]);
+      setNewPromptText("");
+      setPromptDialogOpen(false);
+    } catch (err) {
+      console.error("failed to create prompt:", err);
+    } finally {
+      setSendingPrompt(false);
+    }
+  };
+
+  const handleRemovePatient = async () => {
+    setRemoveError("");
+    setRemoving(true);
+    try {
+      await removePatient(patientId);
+      router.push("/dashboard/patients");
+    } catch {
+      setRemoveError("Failed to remove patient. Please try again.");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  const pendingPrompts = prompts.filter((p) => p.status === "pending");
+  const respondedPrompts = prompts.filter((p) => p.status === "responded");
+
   return (
     <div className="space-y-6">
       {/* header */}
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.back()}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <div className="flex items-center gap-3">
-          <Avatar className="h-10 w-10">
-            <AvatarFallback>{initials}</AvatarFallback>
-          </Avatar>
-          <div>
-            <h2 className="text-lg font-semibold">{patient.name}</h2>
-            <p className="text-sm text-muted-foreground">{patient.email}</p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => router.back()}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div className="flex items-center gap-3">
+            <Avatar className="h-10 w-10">
+              <AvatarFallback>{initials}</AvatarFallback>
+            </Avatar>
+            <div>
+              <h2 className="text-lg font-semibold">{patient.name}</h2>
+              <p className="text-sm text-muted-foreground">{patient.email}</p>
+            </div>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Dialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen}>
+            <DialogTrigger asChild>
+              <Button size="sm" variant="outline">
+                <MessageSquare className="mr-2 h-4 w-4" />
+                Assign Prompt
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Assign Reflection Prompt</DialogTitle>
+                <DialogDescription>
+                  Send a writing prompt to {patient.name}. They&apos;ll see it on
+                  their journal page and can respond with a journal entry.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <Textarea
+                  placeholder="e.g., This week, write about a moment where you felt proud of yourself..."
+                  className="min-h-[120px] resize-none text-sm"
+                  value={newPromptText}
+                  onChange={(e) => setNewPromptText(e.target.value)}
+                />
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">
+                    {newPromptText.length}/2000 characters
+                  </span>
+                  <Button
+                    size="sm"
+                    onClick={handleSendPrompt}
+                    disabled={newPromptText.trim().length < 5 || sendingPrompt}
+                  >
+                    {sendingPrompt ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="mr-2 h-4 w-4" />
+                    )}
+                    {sendingPrompt ? "Sending..." : "Send Prompt"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={removeDialogOpen} onOpenChange={(open) => {
+            setRemoveDialogOpen(open);
+            if (!open) setRemoveError("");
+          }}>
+            <DialogTrigger asChild>
+              <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-400 hover:bg-red-500/10">
+                <UserX className="mr-2 h-4 w-4" />
+                Remove
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Remove Patient</DialogTitle>
+                <DialogDescription>
+                  This will permanently delete {patient.name}&apos;s account and
+                  all their data including journals, analytics, and prompts.
+                  This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                {removeError && (
+                  <p className="text-sm text-red-500">{removeError}</p>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRemoveDialogOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleRemovePatient}
+                    disabled={removing}
+                  >
+                    {removing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Remove Patient
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
@@ -210,7 +362,7 @@ export default function PatientProfilePage() {
           <CardContent className="flex items-center gap-3 pt-6">
             <BookOpen className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-xs text-muted-foreground">Total Entries</p>
+              <p className="text-xs text-muted-foreground">Processed Entries</p>
               <p className="text-sm font-medium">
                 {analytics?.totalEntries ?? allJournals.length}
               </p>
@@ -237,10 +389,10 @@ export default function PatientProfilePage() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium">
-                Journal Entries
+                Processed Entries
               </CardTitle>
               <CardDescription>
-                {journals.length} entries
+                {journals.length} processed entries
                 {themeFilter !== "all" && ` matching "${themeFilter}"`}
                 {searchQuery && ` containing "${searchQuery}"`}
               </CardDescription>
@@ -340,7 +492,7 @@ export default function PatientProfilePage() {
                     <div className="flex items-center justify-between pt-2">
                       <p className="text-xs text-muted-foreground">
                         Page {page + 1} of {totalPages} ({journals.length}{" "}
-                        entries)
+                        processed entries)
                       </p>
                       <div className="flex gap-1">
                         <Button
@@ -368,7 +520,7 @@ export default function PatientProfilePage() {
               ) : (
                 <div className="rounded-lg border border-dashed p-12 text-center">
                   <p className="text-sm text-muted-foreground">
-                    No journal entries found
+                    No processed entries found
                     {searchQuery && ` matching "${searchQuery}"`}
                     {themeFilter !== "all" && ` with theme "${themeFilter}"`}.
                   </p>
@@ -424,7 +576,7 @@ export default function PatientProfilePage() {
                       {analytics.totalEntries}
                     </div>
                     <div className="text-[11px] text-muted-foreground">
-                      Total entries
+                      Processed entries
                     </div>
                   </div>
                   <div className="rounded-lg border p-3 text-center">
@@ -527,6 +679,75 @@ export default function PatientProfilePage() {
               </CardContent>
             </Card>
           )}
+
+          {/* prompts section */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm font-medium">
+                  Assigned Prompts
+                </CardTitle>
+                <Badge variant="outline" className="text-[10px]">
+                  {pendingPrompts.length} pending
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {prompts.length > 0 ? (
+                <>
+                  {prompts.slice(0, 5).map((prompt) => (
+                    <div
+                      key={prompt.promptId}
+                      className="rounded-lg border p-3 space-y-1"
+                    >
+                      <div className="flex items-center justify-between">
+                        <Badge
+                          variant={prompt.status === "pending" ? "outline" : "secondary"}
+                          className="text-[10px]"
+                        >
+                          {prompt.status === "pending" ? "Pending" : "Answered"}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(prompt.createdAt).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-2">
+                        {prompt.promptText}
+                      </p>
+                      {prompt.responseContent && (
+                        <p className="text-xs text-muted-foreground/70 line-clamp-1 italic">
+                          Response: {prompt.responseContent}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {prompts.length > 5 && (
+                    <p className="text-center text-[10px] text-muted-foreground">
+                      +{prompts.length - 5} more prompts
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="rounded-lg border border-dashed p-4 text-center">
+                  <p className="text-xs text-muted-foreground">
+                    No prompts assigned yet
+                  </p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="mt-2 text-xs"
+                    onClick={() => setPromptDialogOpen(true)}
+                  >
+                    <Plus className="mr-1 h-3 w-3" />
+                    Assign first prompt
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
