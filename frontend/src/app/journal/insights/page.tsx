@@ -13,14 +13,12 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Separator } from "@/components/ui/separator";
 import {
   LineChart,
   TrendingUp,
   Activity,
   Brain,
   Calendar,
-  BookOpen,
   Flame,
 } from "lucide-react";
 import { fetchAnalytics, fetchMoodTrend, fetchJournals } from "@/lib/api";

@@ -5,13 +5,18 @@
 import {
   createContext,
   useContext,
-  useEffect,
   useState,
   useCallback,
   type ReactNode,
 } from "react";
 
 type Theme = "dark" | "light";
+
+function getStoredTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
+  const stored = localStorage.getItem("calmai-theme") as Theme | null;
+  return stored || "dark";
+}
 
 interface ThemeContextType {
   theme: Theme;
@@ -28,15 +33,7 @@ export function useTheme() {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("dark");
-
-  // read persisted theme on mount and sync html class
-  useEffect(() => {
-    const stored = localStorage.getItem("calmai-theme") as Theme | null;
-    const initial = stored || "dark";
-    setTheme(initial);
-    document.documentElement.classList.toggle("dark", initial === "dark");
-  }, []);
+  const [theme, setTheme] = useState<Theme>(getStoredTheme);
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {

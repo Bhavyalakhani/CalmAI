@@ -222,7 +222,6 @@ export default function PatientProfilePage() {
   };
 
   const pendingPrompts = prompts.filter((p) => p.status === "pending");
-  const respondedPrompts = prompts.filter((p) => p.status === "responded");
 
   return (
     <div className="space-y-6">
