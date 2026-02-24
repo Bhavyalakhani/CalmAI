@@ -15,32 +15,49 @@ from typing import Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import settings
 from app.services.db import Database
+from app.services.vertex_embedding_client import probe_vertex_ai_endpoint
 
 logger = logging.getLogger(__name__)
 
 # max conversation history turns sent to the llm
 MAX_HISTORY_TURNS = 10
 
-# singleton embedding model (loaded once)
-_embedding_model: Optional[HuggingFaceEmbeddings] = None
+# singleton embedding model (loaded once at first use)
+_embedding_model: Optional[Embeddings] = None
 
 
-def get_embedding_model() -> HuggingFaceEmbeddings:
+def _load_embedding_model() -> Embeddings:
+    """initialize embedding model — vertex ai if configured and healthy, else huggingface"""
+    if settings.VERTEX_AI_ENDPOINT_URL:
+        logger.info(f"Probing Vertex AI embedding endpoint: {settings.VERTEX_AI_ENDPOINT_URL}")
+        client = probe_vertex_ai_endpoint(settings.VERTEX_AI_ENDPOINT_URL)
+        if client is not None:
+            return client
+        logger.warning(
+            "Vertex AI endpoint unavailable — falling back to HuggingFace embeddings"
+        )
+
+    logger.info(f"Loading HuggingFace embedding model: {settings.EMBEDDING_MODEL}")
+    model = HuggingFaceEmbeddings(
+        model_name=settings.EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+    logger.info("HuggingFace embedding model loaded")
+    return model
+
+
+def get_embedding_model() -> Embeddings:
     """get or create the singleton embedding model"""
     global _embedding_model
     if _embedding_model is None:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _embedding_model = HuggingFaceEmbeddings(
-            model_name=settings.EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-        logger.info("Embedding model loaded")
+        _embedding_model = _load_embedding_model()
     return _embedding_model
 
 

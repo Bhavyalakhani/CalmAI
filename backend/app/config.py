@@ -25,9 +25,17 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-    # embedding model
+    # embedding model (huggingface fallback)
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     EMBEDDING_DIM: int = 384
+
+    # vertex ai embedding endpoint (optional)
+    # if set, the app will probe this endpoint at startup and use it for embeddings.
+    # falls back to EMBEDDING_MODEL (huggingface) if the probe fails or this is empty.
+    # full endpoint url: https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT}/
+    #                    locations/{LOCATION}/endpoints/{ENDPOINT_ID}:predict
+    # auth: google application default credentials (ADC) — set GOOGLE_APPLICATION_CREDENTIALS
+    VERTEX_AI_ENDPOINT_URL: str = os.getenv("VERTEX_AI_ENDPOINT_URL", "")
 
     # cors
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")

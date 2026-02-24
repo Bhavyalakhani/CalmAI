@@ -27,6 +27,9 @@ langchain-huggingface>=0.2.0
 # embedding model
 sentence-transformers>=3.0.0
 
+# vertex ai embedding endpoint auth (optional — used if VERTEX_AI_ENDPOINT_URL is set)
+google-auth>=2.0.0
+
 # testing
 httpx>=0.28.0
 pytest>=8.0.0
