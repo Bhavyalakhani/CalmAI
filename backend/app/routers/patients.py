@@ -167,3 +167,55 @@ async def get_patient(
         dateOfBirth=doc.get("date_of_birth"),
         onboardedAt=doc.get("onboarded_at", doc.get("created_at", "")),
     )
+
+
+@router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_patient(
+    patient_id: str,
+    current_user: dict = Depends(require_role("therapist")),
+    db: Database = Depends(get_db),
+):
+    """remove a patient from the therapist's care and delete all their data"""
+    from app.routers.auth import _cascade_delete_patient
+
+    therapist_id = current_user.get("id", "")
+
+    # verify the patient exists and belongs to this therapist
+    try:
+        doc = await db.users.find_one(
+            {"_id": ObjectId(patient_id), "role": "patient"},
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+
+    if doc.get("therapist_id") != therapist_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Patient does not belong to you",
+        )
+
+    # cascade delete all patient data
+    await _cascade_delete_patient(patient_id, db)
+
+    # unlink from therapist
+    try:
+        await db.users.update_one(
+            {"_id": ObjectId(therapist_id)},
+            {"$pull": {"patient_ids": patient_id}},
+        )
+    except Exception as e:
+        logger.warning(f"Could not unlink patient from therapist: {e}")
+
+    # delete the patient user document
+    await db.users.delete_one({"_id": ObjectId(patient_id)})
+
+    logger.info(f"Therapist {therapist_id} removed patient {patient_id}")

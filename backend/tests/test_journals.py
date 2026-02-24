@@ -2,6 +2,7 @@
 # both therapist and patient access with role-based filtering
 
 import pytest
+from bson import ObjectId
 from tests.conftest import PATIENT_ID, PATIENT_2_ID, THERAPIST_ID
 
 
@@ -98,3 +99,102 @@ class TestSubmitJournal:
         assert doc["is_processed"] is False
         # journal submit uses pipeline_patient_id for consistency with data pipeline
         assert doc["patient_id"] == "patient_001"
+
+    async def test_submit_journal_writes_preliminary_to_journals(self, patient_client, mock_db):
+        initial_count = len(mock_db.journals._data)
+        await patient_client.post("/journals", json={
+            "content": "This should appear immediately in the journals collection before DAG 2 runs.",
+            "mood": 4,
+        })
+        assert len(mock_db.journals._data) == initial_count + 1
+        doc = mock_db.journals._data[-1]
+        assert doc["content"] == "This should appear immediately in the journals collection before DAG 2 runs."
+        assert doc["mood"] == 4
+        assert doc["is_embedded"] is False
+        assert doc["patient_id"] == "patient_001"
+
+
+class TestAnalyticsRefresh:
+    """verify analytics are refreshed instantly on submit, edit, delete"""
+
+    async def test_submit_journal_refreshes_analytics(self, patient_client, mock_db):
+        """submitting a journal should update patient_analytics (total_entries, entry_frequency)"""
+        old_analytics = await mock_db.patient_analytics.find_one({"patient_id": PATIENT_ID})
+        old_total = old_analytics["total_entries"] if old_analytics else 0
+
+        await patient_client.post("/journals", json={
+            "content": "Describing my day at length so the analytics refresh picks up this new entry properly.",
+            "mood": 3,
+        })
+
+        # analytics doc should exist for this patient's pipeline id
+        analytics = await mock_db.patient_analytics.find_one({"patient_id": "patient_001"})
+        assert analytics is not None
+        # total_entries should reflect current journals count for this patient
+        assert "total_entries" in analytics
+        assert "avg_word_count" in analytics
+        assert "updated_at" in analytics
+
+    async def test_delete_journal_refreshes_analytics(self, patient_client, mock_db):
+        """deleting a journal should decrement total_entries in patient_analytics"""
+        # seed an analytics doc for the pipeline patient id
+        mock_db.patient_analytics._data.append({
+            "_id": ObjectId(),
+            "patient_id": "patient_001",
+            "total_entries": 2,
+            "topic_distribution": [
+                {"topic_id": 0, "label": "anxiety", "keywords": [], "percentage": 100.0, "count": 2},
+            ],
+            "representative_entries": [
+                {"topic_id": 0, "label": "anxiety", "journal_id": "abc123def456", "content": "...", "entry_date": "2025-06-10", "probability": 0.9},
+            ],
+            "avg_word_count": 11.5,
+            "entry_frequency": {"2025-06": 2},
+            "date_range": {"first": "2025-06-10", "last": "2025-06-13", "span_days": 3},
+        })
+
+        # also put journal patient_id to match pipeline_id for the delete flow
+        for j in mock_db.journals._data:
+            j["patient_id"] = "patient_001"
+
+        resp = await patient_client.delete("/journals/abc123def456")
+        assert resp.status_code == 204
+
+        # check analytics was updated
+        analytics = await mock_db.patient_analytics.find_one({"patient_id": "patient_001"})
+        assert analytics is not None
+        assert analytics["total_entries"] == 1  # was 2, now 1 after delete
+
+        # representative_entries should not contain the deleted journal
+        repr_ids = [r["journal_id"] for r in analytics.get("representative_entries", [])]
+        assert "abc123def456" not in repr_ids
+
+    async def test_edit_journal_refreshes_analytics(self, patient_client, mock_db):
+        """editing a journal should refresh analytics stats"""
+        # seed analytics for the pipeline patient
+        mock_db.patient_analytics._data.append({
+            "_id": ObjectId(),
+            "patient_id": "patient_001",
+            "total_entries": 2,
+            "topic_distribution": [],
+            "representative_entries": [],
+            "avg_word_count": 11.5,
+            "entry_frequency": {"2025-06": 2},
+            "date_range": {"first": "2025-06-10", "last": "2025-06-13", "span_days": 3},
+        })
+
+        # set pipeline patient_id on journals
+        for j in mock_db.journals._data:
+            j["patient_id"] = "patient_001"
+
+        resp = await patient_client.patch("/journals/abc123def456", json={
+            "content": "I edited this journal to add more detail about my anxiety and how I am coping with it over time.",
+            "mood": 3,
+        })
+        assert resp.status_code == 200
+
+        analytics = await mock_db.patient_analytics.find_one({"patient_id": "patient_001"})
+        assert analytics is not None
+        # total_entries should still be 2 (edit doesn't change count)
+        assert analytics["total_entries"] == 2
+        assert "updated_at" in analytics

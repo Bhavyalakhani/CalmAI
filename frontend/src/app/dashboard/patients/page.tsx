@@ -50,6 +50,7 @@ export default function PatientsPage() {
   const [copied, setCopied] = useState(false);
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     const loadData = async () => {
@@ -151,7 +152,12 @@ export default function PatientsPage() {
         <div className="flex gap-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input placeholder="Search patients..." className="pl-9 w-64" />
+            <Input
+              placeholder="Search patients..."
+              className="pl-9 w-64"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
           </div>
           <Dialog open={inviteDialogOpen} onOpenChange={handleDialogOpen}>
             <DialogTrigger asChild>
@@ -279,7 +285,14 @@ export default function PatientsPage() {
 
       {/* patient grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {patients.map((patient) => {
+        {patients.filter((p) => {
+          if (!searchQuery.trim()) return true;
+          const q = searchQuery.toLowerCase();
+          return (
+            p.name.toLowerCase().includes(q) ||
+            p.email.toLowerCase().includes(q)
+          );
+        }).map((patient) => {
           const analytics = analyticsMap[patient.id];
           const initials = patient.name
             .split(" ")
@@ -333,7 +346,7 @@ export default function PatientsPage() {
                 <Separator />
 
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">Entries</span>
+                  <span className="text-muted-foreground">Processed Entries</span>
                   <span className="font-medium">
                     {analytics?.totalEntries ?? 0}
                   </span>

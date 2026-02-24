@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import type { Patient } from "@/types";
 
 const navItems = [
@@ -87,6 +88,7 @@ export default function JournalLayout({
               </Avatar>
               <span className="text-sm font-medium">{patient?.name ?? "Patient"}</span>
             </div>
+            <ThemeToggle />
             <Button variant="ghost" size="sm" onClick={logout}>
               <LogOut className="h-4 w-4" />
             </Button>

@@ -23,8 +23,8 @@ import {
   TrendingUp,
   Quote,
   Star,
-
 } from "lucide-react";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 // reusable cards
 
@@ -152,6 +152,7 @@ export default function Home() {
             <span className="text-lg font-bold tracking-tight">CalmAI</span>
           </Link>
           <nav className="flex items-center gap-2">
+            <ThemeToggle />
             <Button variant="ghost" size="sm" asChild>
               <Link href="/login">Log in</Link>
             </Button>
@@ -296,8 +297,8 @@ export default function Home() {
         {/* stats */}
         <section className="border-t bg-muted/40">
           <div className="mx-auto grid max-w-4xl grid-cols-2 gap-8 px-6 py-20 sm:grid-cols-4">
-            <StatBlock label="Conversations indexed" value="3,500+" />
-            <StatBlock label="Journal entries" value="1,000+" />
+            <StatBlock label="Publicly avaiable conversations indexed" value="3,500+" />
+            <StatBlock label="Journal entries across multiple patients" value="1,000+" />
             <StatBlock label="Average query time" value="< 1s" />
             <StatBlock label="RAG faithfulness" value="90%+" />
           </div>

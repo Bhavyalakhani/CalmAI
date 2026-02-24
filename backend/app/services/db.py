@@ -72,6 +72,10 @@ class Database:
     def invite_codes(self):
         return self.db["invite_codes"]
 
+    @property
+    def prompts(self):
+        return self.db["prompts"]
+
 
 # singleton instance
 db = Database()

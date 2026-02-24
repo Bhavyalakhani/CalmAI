@@ -15,7 +15,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { mockTherapist, mockPatient, mockAnalytics, mockJournals } from "@/__tests__/mock-api-data";
+import { mockTherapist, mockPatient, mockAnalytics, mockJournals, mockPrompts } from "@/__tests__/mock-api-data";
 
 vi.mock("@/lib/auth-context", () => ({
   useAuth: () => ({
@@ -34,9 +34,12 @@ vi.mock("@/lib/api", () => ({
   fetchAnalytics: vi.fn(),
   fetchJournals: vi.fn(),
   fetchMoodTrend: vi.fn(),
+  fetchAllPrompts: vi.fn(),
+  createPrompt: vi.fn(),
+  removePatient: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { fetchPatient, fetchAnalytics, fetchJournals, fetchMoodTrend } from "@/lib/api";
+import { fetchPatient, fetchAnalytics, fetchJournals, fetchMoodTrend, fetchAllPrompts } from "@/lib/api";
 import PatientProfilePage from "@/app/dashboard/patients/[id]/page";
 
 describe("Patient profile page", () => {
@@ -45,6 +48,7 @@ describe("Patient profile page", () => {
     vi.mocked(fetchAnalytics).mockResolvedValue(mockAnalytics);
     vi.mocked(fetchJournals).mockResolvedValue(mockJournals);
     vi.mocked(fetchMoodTrend).mockResolvedValue([]);
+    vi.mocked(fetchAllPrompts).mockResolvedValue(mockPrompts);
   });
 
   it("renders without crashing", () => {
@@ -68,7 +72,7 @@ describe("Patient profile page", () => {
   it("displays journal entries", async () => {
     render(<PatientProfilePage />);
     await waitFor(() => {
-      expect(screen.getByText("Journal Entries")).toBeInTheDocument();
+      expect(screen.getAllByText("Processed Entries").length).toBeGreaterThan(0);
     });
   });
 
@@ -107,6 +111,27 @@ describe("Patient profile page", () => {
     render(<PatientProfilePage />);
     await waitFor(() => {
       expect(screen.getByText("Patient not found")).toBeInTheDocument();
+    });
+  });
+
+  it("shows Assign Prompt button", async () => {
+    render(<PatientProfilePage />);
+    await waitFor(() => {
+      expect(screen.getByText("Assign Prompt")).toBeInTheDocument();
+    });
+  });
+
+  it("shows assigned prompts section", async () => {
+    render(<PatientProfilePage />);
+    await waitFor(() => {
+      expect(screen.getByText("Assigned Prompts")).toBeInTheDocument();
+    });
+  });
+
+  it("shows Remove button", async () => {
+    render(<PatientProfilePage />);
+    await waitFor(() => {
+      expect(screen.getByText("Remove")).toBeInTheDocument();
     });
   });
 });

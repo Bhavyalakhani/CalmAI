@@ -239,7 +239,7 @@ function PatientItem({
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{patient.name}</p>
         <p className="text-xs text-muted-foreground">
-          {analytics?.totalEntries ?? 0} entries
+          {analytics?.totalEntries ?? 0} processed entries
         </p>
       </div>
     </button>
@@ -545,7 +545,7 @@ export default function DashboardOverview() {
       <div>
         <h2 className="text-lg font-semibold">Overview</h2>
         <p className="text-sm text-muted-foreground">
-          Your practice at a glance - {patients.length} patients, {stats?.totalJournals ?? 0} journal entries
+          Your practice at a glance - {patients.length} patients, {stats?.totalJournals ?? 0} processed entries
         </p>
       </div>
 
@@ -559,7 +559,7 @@ export default function DashboardOverview() {
           trend="up"
         />
         <StatCard
-          title="Journal Entries"
+          title="Processed Entries"
           value={stats?.totalJournals.toString() ?? "0"}
           description="+18 this week"
           icon={BookOpen}
@@ -621,7 +621,7 @@ export default function DashboardOverview() {
                       {selectedPatient.name} - Analytics
                     </CardTitle>
                     <CardDescription>
-                      {selectedAnalytics.totalEntries} entries over{" "}
+                      {selectedAnalytics.totalEntries} processed entries over{" "}
                       {selectedAnalytics.dateRange?.spanDays ?? 0} days
                     </CardDescription>
                   </div>
@@ -664,7 +664,7 @@ export default function DashboardOverview() {
                           {selectedAnalytics.totalEntries}
                         </div>
                         <div className="text-[11px] text-muted-foreground">
-                          Total entries
+                          Processed entries
                         </div>
                       </div>
                       <div className="rounded-lg border p-3 text-center">
@@ -753,7 +753,7 @@ export default function DashboardOverview() {
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-sm font-medium">
-              Recent Journal Entries -{" "}
+              Recent Processed Entries -{" "}
               {selectedPatient?.name ?? "Select a patient"}
             </CardTitle>
           </div>

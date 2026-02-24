@@ -4,6 +4,7 @@
 // wired to backend PATCH /auth/profile, PATCH /auth/notifications, DELETE /auth/account
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Card,
   CardContent,
@@ -17,6 +18,15 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Loader2, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import {
   updateProfile,
@@ -28,6 +38,7 @@ import type { Therapist } from "@/types";
 
 export default function SettingsPage() {
   const { user, logout } = useAuth();
+  const router = useRouter();
   const therapist = user as Therapist | null;
 
   const [name, setName] = useState(therapist?.name ?? "");
@@ -45,10 +56,14 @@ export default function SettingsPage() {
 
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState("");
   const [saving, setSaving] = useState(false);
   const [savingNotifs, setSavingNotifs] = useState(false);
+
+  // delete account state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const canDelete = useMemo(() => deleteConfirm === "DELETE", [deleteConfirm]);
 
@@ -96,22 +111,18 @@ export default function SettingsPage() {
   };
 
   const handleDeleteAccount = async () => {
-    if (!canDelete) {
-      setErrorMessage('type "DELETE" to confirm account deletion.');
-      setStatusMessage(null);
-      return;
-    }
+    if (!canDelete) return;
 
     setDeleting(true);
-    setErrorMessage(null);
-    setStatusMessage(null);
+    setDeleteError("");
 
     try {
       await deleteAccount();
-      setStatusMessage("account deleted. signing out...");
-      setTimeout(() => logout(), 350);
+      logout();
+      router.push("/");
     } catch (err: unknown) {
-      setErrorMessage((err as ApiError)?.detail || "failed to delete account.");
+      setDeleteError((err as ApiError)?.detail || "Failed to delete account. Please try again.");
+    } finally {
       setDeleting(false);
     }
   };
@@ -267,45 +278,96 @@ export default function SettingsPage() {
       </Card>
 
       {/* danger zone */}
-      <Card className="border-destructive/30">
+      <Card className="border-red-900/50">
         <CardHeader>
-          <CardTitle className="text-sm text-destructive">
-            Danger Zone
-          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Trash2 className="h-4 w-4 text-red-500" />
+            <CardTitle className="text-sm text-red-500">
+              Danger Zone
+            </CardTitle>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Delete Account</p>
               <p className="text-xs text-muted-foreground">
-                Permanently remove your account and all associated data
+                Permanently remove your account, patients will be unlinked
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={logout}>
               Sign out now
             </Button>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="delete-confirm" className="text-xs text-muted-foreground">
-              Type DELETE to confirm
-            </Label>
-            <Input
-              id="delete-confirm"
-              value={deleteConfirm}
-              onChange={(e) => setDeleteConfirm(e.target.value)}
-              placeholder="DELETE"
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={!canDelete || deleting}
-              onClick={handleDeleteAccount}
-            >
-              {deleting ? "Deleting..." : "Delete"}
-            </Button>
-          </div>
+          <Separator />
+          <p className="text-sm text-muted-foreground">
+            This action is irreversible. Your account and all associated data
+            will be permanently deleted. Your patients will be unlinked but
+            their accounts will remain intact.
+          </p>
+          <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+            setDeleteDialogOpen(open);
+            if (!open) {
+              setDeleteConfirm("");
+              setDeleteError("");
+            }
+          }}>
+            <DialogTrigger asChild>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="cursor-pointer transition-all hover:bg-red-600 hover:shadow-md hover:shadow-red-500/20"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Account
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Are you absolutely sure?</DialogTitle>
+                <DialogDescription>
+                  This will permanently delete your therapist account. Your
+                  patients will be unlinked but their accounts will remain.
+                  This cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="delete-confirm">
+                    Type <span className="font-semibold text-red-500">DELETE</span> to confirm
+                  </Label>
+                  <Input
+                    id="delete-confirm"
+                    value={deleteConfirm}
+                    onChange={(e) => setDeleteConfirm(e.target.value)}
+                    placeholder="Type DELETE to confirm"
+                  />
+                </div>
+                {deleteError && (
+                  <p className="text-sm text-red-500">{deleteError}</p>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeleteDialogOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleDeleteAccount}
+                    disabled={!canDelete || deleting}
+                    className="cursor-pointer transition-all hover:bg-red-600"
+                  >
+                    {deleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Delete Forever
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
     </div>

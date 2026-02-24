@@ -354,6 +354,21 @@ class TestDeleteAccount:
         assert resp.status_code == 204
         assert len(mock_db.users._data) == initial_count - 1
 
+    async def test_delete_patient_cascade_deletes_journals(self, patient_client, mock_db):
+        """patient delete should cascade-remove all their journals"""
+        assert len(mock_db.journals._data) >= 1
+        resp = await patient_client.delete("/auth/account")
+        assert resp.status_code == 204
+        patient_journals = [j for j in mock_db.journals._data if j.get("patient_id") == PATIENT_ID]
+        assert len(patient_journals) == 0
+
+    async def test_delete_patient_cascade_deletes_analytics(self, patient_client, mock_db):
+        """patient delete should cascade-remove their analytics"""
+        assert len(mock_db.patient_analytics._data) == 1
+        resp = await patient_client.delete("/auth/account")
+        assert resp.status_code == 204
+        assert len(mock_db.patient_analytics._data) == 0
+
     async def test_delete_patient_unlinks_from_therapist(self, patient_client, mock_db):
         # verify patient is in therapist's patient_ids before deletion
         therapist = mock_db.users._data[0]

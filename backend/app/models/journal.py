@@ -9,6 +9,9 @@ class JournalCreate(BaseModel):
     """payload for patient journal submission — written to incoming_journals"""
     content: str = Field(..., min_length=10, max_length=10000, description="journal entry text")
     mood: Optional[int] = Field(None, ge=1, le=5, description="mood score 1-5")
+    prompt_id: Optional[str] = Field(None, alias="promptId", description="prompt id if responding to a therapist prompt")
+
+    model_config = {"populate_by_name": True}
 
 
 class JournalEntryResponse(BaseModel):
@@ -23,6 +26,7 @@ class JournalEntryResponse(BaseModel):
     sentence_count: int = Field(0, alias="sentenceCount")
     avg_word_length: float = Field(0.0, alias="avgWordLength")
     mood: Optional[int] = None
+    prompt_id: Optional[str] = Field(None, alias="promptId")
     day_of_week: Optional[str] = Field(None, alias="dayOfWeek")
     week_number: Optional[int] = Field(None, alias="weekNumber")
     month: Optional[int] = None

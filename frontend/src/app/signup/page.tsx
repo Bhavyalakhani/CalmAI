@@ -16,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Brain, ArrowRight, Stethoscope, BookHeart } from "lucide-react";
 import type { UserRole } from "@/types";
 import { useAuth } from "@/lib/auth-context";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export default function SignupPage() {
   const { signup } = useAuth();
@@ -71,6 +72,11 @@ export default function SignupPage() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
+      {/* theme toggle */}
+      <div className="fixed right-4 top-4">
+        <ThemeToggle />
+      </div>
+
       {/* Logo */}
       <Link
         href="/"

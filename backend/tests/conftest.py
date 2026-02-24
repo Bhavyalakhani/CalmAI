@@ -237,6 +237,7 @@ class MockCollection:
         result = MagicMock()
         result.modified_count = 0
         result.matched_count = 0
+        result.upserted_id = None
         for doc in self._data:
             if self._matches(doc, query):
                 result.matched_count = 1
@@ -254,6 +255,15 @@ class MockCollection:
                             doc[key] = [v for v in doc[key] if v != val]
                 result.modified_count = 1
                 break
+        else:
+            # no match found — handle upsert
+            if upsert:
+                new_doc = dict(query)
+                new_doc["_id"] = ObjectId()
+                if "$set" in update:
+                    new_doc.update(update["$set"])
+                self._data.append(new_doc)
+                result.upserted_id = new_doc["_id"]
         return result
 
     async def update_many(self, query, update, upsert=False):
@@ -274,6 +284,18 @@ class MockCollection:
                 self._data.pop(i)
                 result.deleted_count = 1
                 break
+        return result
+
+    async def delete_many(self, query):
+        result = MagicMock()
+        result.deleted_count = 0
+        remaining = []
+        for doc in self._data:
+            if self._matches(doc, query):
+                result.deleted_count += 1
+            else:
+                remaining.append(doc)
+        self._data = remaining
         return result
 
     async def create_index(self, *args, **kwargs):
@@ -370,6 +392,7 @@ class MockDatabase:
         self.rag_vectors = MockCollection([])
         self.pipeline_metadata = MockCollection([])
         self.invite_codes = MockCollection([])
+        self.prompts = MockCollection([])
 
     async def connect(self):
         pass

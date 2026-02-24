@@ -1,5 +1,5 @@
 # dashboard router — aggregate stats and mood trend for therapist overview
-# therapist-only endpoints, aggregates from multiple collections
+# therapist-only stats endpoint, mood trend accessible by therapists and patients (own data)
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from app.models.dashboard import DashboardStats, TrendDataPoint
 from app.services.db import Database, get_db
-from app.dependencies import require_role
+from app.dependencies import require_role, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -79,17 +79,27 @@ async def get_dashboard_stats(
 async def get_mood_trend(
     patient_id: str,
     days: int = Query(14, ge=1, le=90),
-    current_user: dict = Depends(require_role("therapist")),
+    current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_db),
 ):
-    """get mood trend data points for a patient over the last N days"""
+    """get mood trend data points for a patient over the last N days.
+    accessible by therapists (for their patients) and patients (for themselves)."""
 
-    # verify therapist owns this patient
-    if patient_id not in current_user.get("patient_ids", []):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this patient",
-        )
+    # access control: therapists can view their patients, patients can view their own
+    if current_user["role"] == "therapist":
+        if patient_id not in current_user.get("patient_ids", []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this patient",
+            )
+    elif current_user["role"] == "patient":
+        if patient_id != current_user["id"]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own mood trend",
+            )
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     # resolve pipeline id for the patient
     from bson import ObjectId as _ObjId
@@ -102,14 +112,19 @@ async def get_mood_trend(
         pass
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
 
     cursor = db.journals.find(
-        {"patient_id": {"$in": [patient_id, pipeline_id]}, "entry_date": {"$gte": cutoff}},
+        {
+            "patient_id": {"$in": [patient_id, pipeline_id]},
+            "entry_date": {"$gte": cutoff, "$lte": now_str},
+        },
         {"entry_date": 1, "mood": 1, "_id": 0},
     ).sort("entry_date", 1)
 
     mood_labels = {1: "Very Low", 2: "Low", 3: "Moderate", 4: "Good", 5: "Great"}
-    trend = []
+    # aggregate by unique day — average mood if multiple entries on the same day
+    day_moods: dict[str, list[float]] = {}
     async for doc in cursor:
         mood = doc.get("mood")
         entry_date = doc.get("entry_date", "")
@@ -119,10 +134,21 @@ async def get_mood_trend(
             date_str = str(entry_date)[:10]
 
         if mood is not None:
-            trend.append(TrendDataPoint(
-                date=date_str,
-                value=float(mood),
-                label=mood_labels.get(int(mood), "Unknown"),
-            ))
+            import math
+            val = float(mood)
+            if not math.isnan(val):
+                day_moods.setdefault(date_str, []).append(val)
+
+    trend = []
+    for date_str in sorted(day_moods):
+        values = day_moods[date_str]
+        if not values:
+            continue
+        avg_mood = round(sum(values) / len(values), 1)
+        trend.append(TrendDataPoint(
+            date=date_str,
+            value=avg_mood,
+            label=mood_labels.get(round(avg_mood), "Unknown"),
+        ))
 
     return trend

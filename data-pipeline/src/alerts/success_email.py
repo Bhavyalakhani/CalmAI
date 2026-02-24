@@ -41,6 +41,7 @@ TASK_ORDER_INCOMING = [
     ("validate_entries", "Validate"),
     ("embed_entries", "Embed"),
     ("store_to_mongodb", "Store to MongoDB"),
+    ("conditional_retrain", "Conditional Retrain"),
     ("update_analytics", "Update Analytics"),
     ("mark_processed", "Mark Processed"),
 ]
@@ -174,6 +175,9 @@ def send_incoming_success_email(**context):
     embedded_count = len(embedded) if isinstance(embedded, (list, tuple)) else 0
     insert_result = ti.xcom_pull(task_ids="store_to_mongodb", key="insert_result") or {}
     patients_updated = ti.xcom_pull(task_ids="update_analytics", key="patients_updated") or 0
+    retrain_triggered = ti.xcom_pull(task_ids="conditional_retrain", key="retrain_triggered") or False
+    retrain_reason = ti.xcom_pull(task_ids="conditional_retrain", key="retrain_reason") or "—"
+    retrain_results = ti.xcom_pull(task_ids="conditional_retrain", key="retrain_results") or {}
 
     task_rows = _build_task_rows_incoming(ti)
 
@@ -234,6 +238,11 @@ def send_incoming_success_email(**context):
                     <td style="padding:6px 0;"><b>Patients Updated:</b></td>
                     <td>{patients_updated}</td>
                 </tr>
+                <tr>
+                    <td style="padding:6px 0;"><b>Model Retrain:</b></td>
+                    <td>{"Yes" if retrain_triggered else "No"} — {retrain_reason}</td>
+                </tr>
+                {"".join(f'<tr><td style="padding:6px 0;"><b>&nbsp;&nbsp;{k.title()} Model:</b></td><td>{v}</td></tr>' for k, v in retrain_results.items()) if retrain_results else ""}
             </table>
 
             <div style="text-align:center;margin-top:24px;">

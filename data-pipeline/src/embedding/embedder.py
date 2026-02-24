@@ -39,6 +39,8 @@ JOURNAL_EMBEDDING_SCHEMA = [
     "embedding_model",
     "embedding_dim",
     "is_embedded",
+    "prompt_id",
+    "mood",
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

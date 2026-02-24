@@ -79,7 +79,7 @@ describe("Analytics page", () => {
   it("shows summary stat cards", async () => {
     render(<AnalyticsPage />);
     await waitFor(() => {
-      expect(screen.getByText("Total Journal Entries")).toBeInTheDocument();
+      expect(screen.getByText("Total Processed Entries")).toBeInTheDocument();
       expect(screen.getByText("Avg. Word Count")).toBeInTheDocument();
       // "Conversations Corpus" appears both in summary card and tab
       expect(screen.getAllByText("Conversations Corpus").length).toBeGreaterThanOrEqual(1);
@@ -122,7 +122,7 @@ describe("Analytics page", () => {
     render(<AnalyticsPage />);
     await waitFor(() => {
       // overview card should show total entries, avg word count, date span, topics count
-      expect(screen.getByText("Total entries")).toBeInTheDocument();
+      expect(screen.getByText("Processed entries")).toBeInTheDocument();
       expect(screen.getByText("Avg. words / entry")).toBeInTheDocument();
       expect(screen.getByText("Date span (days)")).toBeInTheDocument();
       expect(screen.getByText("Topics identified")).toBeInTheDocument();
@@ -166,7 +166,7 @@ describe("Analytics page", () => {
     });
     await user.click(screen.getByRole("tab", { name: "Patient Comparison" }));
     await waitFor(() => {
-      expect(screen.getByText("Entries per Patient")).toBeInTheDocument();
+      expect(screen.getByText("Processed Entries per Patient")).toBeInTheDocument();
       expect(screen.getByText("Top Topics per Patient")).toBeInTheDocument();
       expect(screen.getByText("Journaling Span")).toBeInTheDocument();
     });

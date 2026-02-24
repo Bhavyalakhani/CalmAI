@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Brain } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -41,6 +42,11 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
+      {/* theme toggle */}
+      <div className="fixed right-4 top-4">
+        <ThemeToggle />
+      </div>
+
       {/* logo */}
       <Link
         href="/"

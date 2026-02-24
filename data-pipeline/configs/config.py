@@ -30,7 +30,11 @@ class Settings:
     # incoming journal validation thresholds
     INCOMING_JOURNAL_MIN_LENGTH: int = 10
     INCOMING_JOURNAL_MAX_LENGTH: int = 10000
-    INCOMING_JOURNAL_BATCH_INTERVAL: str = "*/30 * * * *"
+    INCOMING_JOURNAL_BATCH_INTERVAL: str = "0 */12 * * *"
+
+    # conditional retrain thresholds (dag 2)
+    RETRAIN_ENTRY_THRESHOLD: int = 50
+    RETRAIN_MAX_DAYS: int = 7
 
     def ensure_directories(self):
         dirs = [
