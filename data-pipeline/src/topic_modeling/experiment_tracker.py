@@ -31,6 +31,32 @@ class ExperimentTracker:
         self._mlflow_available = False
         self._setup_tracking()
 
+    def _cleanup_sqlite_migration_artifacts(self, tracking_uri: str):
+        """drop stale Alembic temp tables left by interrupted MLflow migrations.
+
+        when a migration is killed mid-flight, SQLite retains the temp table
+        (e.g. _alembic_tmp_latest_metrics). the next run tries to CREATE it
+        again and fails. dropping it here lets the migration resume cleanly.
+        """
+        if not tracking_uri.startswith("sqlite:///"):
+            return
+        db_path = tracking_uri[len("sqlite:///"):]
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '_alembic_tmp_%'"
+            )
+            stale = [row[0] for row in cursor.fetchall()]
+            for table in stale:
+                cursor.execute(f"DROP TABLE IF EXISTS [{table}]")
+                logger.warning(f"Dropped stale Alembic temp table: {table}")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not clean up stale Alembic temp tables: {e}")
+
     def _setup_tracking(self):
         """configure mlflow tracking URI and experiment.
 
@@ -54,6 +80,7 @@ class ExperimentTracker:
         if tracking_uri:
             mlflow.set_tracking_uri(tracking_uri)
             self._registry_enabled = True
+            self._cleanup_sqlite_migration_artifacts(tracking_uri)
             logger.info(
                 f"MLflow tracking (registry-enabled): experiment={self.experiment_name}, "
                 f"uri={tracking_uri}"
@@ -134,9 +161,10 @@ class ExperimentTracker:
         logger.info(f"Logged artifacts directory: {dir_path}")
 
     def log_model_dir(self, dir_path: str, artifact_path: str = "model"):
-        """log a trained model directory under a named artifact subdirectory.
+        """log a trained model directory as an MLflow pyfunc model so it can be
+        registered via mlflow.register_model(runs:/<run_id>/<artifact_path>).
 
-        uses artifact_path so the registered model URI is runs:/<run_id>/<artifact_path>.
+        also stores the raw files as artifacts under the same path for direct access.
         always call this BEFORE end_run() so the active run is still open.
 
         args:
@@ -146,8 +174,29 @@ class ExperimentTracker:
         if not self._mlflow_available:
             return
         import mlflow
+        from pathlib import Path
+
         try:
+            # log raw files so they're accessible directly
             mlflow.log_artifacts(dir_path, artifact_path=artifact_path)
+
+            # also log as a pyfunc model so mlflow.register_model can find it
+            # using a simple python_function wrapper that loads BERTopic from dir_path
+            class _BERTopicWrapper(mlflow.pyfunc.PythonModel):
+                def load_context(self, context):
+                    from bertopic import BERTopic
+                    self.model = BERTopic.load(context.artifacts["model_dir"])
+
+                def predict(self, context, model_input):
+                    docs = model_input.iloc[:, 0].tolist() if hasattr(model_input, "iloc") else list(model_input)
+                    topics, _ = self.model.transform(docs)
+                    return topics
+
+            mlflow.pyfunc.log_model(
+                artifact_path=artifact_path,
+                python_model=_BERTopicWrapper(),
+                artifacts={"model_dir": str(Path(dir_path).resolve())},
+            )
             logger.info(
                 f"Logged model artifacts from '{dir_path}' under "
                 f"artifact_path='{artifact_path}' in run {self._run_id}"

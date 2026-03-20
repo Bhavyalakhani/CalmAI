@@ -19,6 +19,7 @@ class Settings:
     CONFIGS_DIR: Path = PROJECT_ROOT / "configs"
     LOGS_DIR: Path = PROJECT_ROOT / "logs"
     EMBEDDINGS_DIR: Path = PROJECT_ROOT / "data" / "embeddings"
+    MODELS_DIR: Path = PROJECT_ROOT / "models"
 
     # external services
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

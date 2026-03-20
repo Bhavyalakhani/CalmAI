@@ -15,6 +15,8 @@ import time
 sys.path.insert(0, "/opt/airflow/src")
 sys.path.insert(0, "/opt/airflow/configs")
 
+from config import settings
+
 logger = logging.getLogger("calm_ai_data_pipeline")
 
 default_args = {
@@ -31,8 +33,7 @@ default_args = {
 # each one wraps a pipeline step with timing and xcom
 
 def start_callable(**context):
-    import config
-    config.settings.ensure_directories()
+    settings.ensure_directories()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     context["ti"].xcom_push(key="run_id", value=run_id)
     logger.info(f"Pipeline started | run_id={run_id}")
@@ -40,9 +41,8 @@ def start_callable(**context):
 def download_conversations_callable(**context):
     t0 = time.time()
     try:
-        import config
         from acquisition.data_downloader import DataDownloader
-        output_dir = config.settings.RAW_DATA_DIR / "conversations"
+        output_dir = settings.RAW_DATA_DIR / "conversations"
         downloader = DataDownloader(output_dir=output_dir)
         results = downloader.run(skip_existing=True)
         paths = {k: str(v) for k, v in results.items()}
@@ -189,9 +189,8 @@ def train_journal_model_callable(**context):
         if journals_path:
             df = pd.read_parquet(journals_path)
         else:
-            import config
             df = pd.read_parquet(
-                config.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+                settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
             )
 
         docs, timestamps = trainer.prepare_journal_docs(df)
@@ -244,9 +243,8 @@ def train_conversation_model_callable(**context):
         if conv_path:
             df = pd.read_parquet(conv_path)
         else:
-            import config
             df = pd.read_parquet(
-                config.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
             )
 
         docs, _ = trainer.prepare_conversation_docs(df)
@@ -298,9 +296,8 @@ def train_severity_model_callable(**context):
         if conv_path:
             df = pd.read_parquet(conv_path)
         else:
-            import config
             df = pd.read_parquet(
-                config.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
             )
 
         docs, _ = trainer.prepare_conversation_docs(df)
@@ -386,7 +383,6 @@ def validate_candidates_callable(**context):
         import numpy as np
         from topic_modeling.validation import TopicModelValidator
         from topic_modeling.config import TopicModelConfig
-        import config as cfg
 
         validator = TopicModelValidator()
         reports = {}
@@ -412,7 +408,7 @@ def validate_candidates_callable(**context):
                         df = pd.read_parquet(data_path)
                     else:
                         df = pd.read_parquet(
-                            cfg.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+                            settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
                         )
                     # temporal holdout: use newest 20% as holdout
                     if "entry_date" in df.columns:
@@ -427,7 +423,7 @@ def validate_candidates_callable(**context):
                         df = pd.read_parquet(data_path)
                     else:
                         df = pd.read_parquet(
-                            cfg.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                            settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
                         )
                     # random holdout with fixed seed
                     np.random.seed(42)
@@ -453,7 +449,22 @@ def validate_candidates_callable(**context):
                 logger.error(f"Holdout validation failed for {model_type}: {e}")
                 reports[model_type] = {"status": "error", "error": str(e)}
 
-        ti.xcom_push(key="holdout_reports", value=reports)
+        # convert numpy arrays to lists so XCom can JSON-serialize the reports
+        def _json_safe(obj):
+            import numpy as np
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, dict):
+                return {k: _json_safe(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_json_safe(v) for v in obj]
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            if isinstance(obj, (np.floating,)):
+                return float(obj)
+            return obj
+
+        ti.xcom_push(key="holdout_reports", value=_json_safe(reports))
         ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(f"Candidate validation complete: {len(reports)} models evaluated")
     except Exception as e:
@@ -470,7 +481,6 @@ def bias_gate_candidates_callable(**context):
         import pandas as pd
         import numpy as np
         from bias_detection.holdout_bias_gate import HoldoutBiasGate
-        import config as cfg
 
         gate = HoldoutBiasGate()
         bias_results = {}
@@ -492,7 +502,7 @@ def bias_gate_candidates_callable(**context):
                         df = pd.read_parquet(data_path)
                     else:
                         df = pd.read_parquet(
-                            cfg.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+                            settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
                         )
                     if "entry_date" in df.columns:
                         df = df.sort_values("entry_date")
@@ -504,7 +514,7 @@ def bias_gate_candidates_callable(**context):
                         df = pd.read_parquet(data_path)
                     else:
                         df = pd.read_parquet(
-                            cfg.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                            settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
                         )
                     np.random.seed(42)
                     indices = np.random.permutation(len(df))
@@ -587,12 +597,42 @@ def selection_branch_callable(**context):
     return "selection_rejected"
 
 
+def _upload_model_to_gcs(model_path: str, gcs_key: str) -> bool:
+    """upload a local model directory to GCS. returns True on success."""
+    bucket_name = settings.MODEL_REGISTRY_BUCKET
+    if not bucket_name:
+        logger.warning("MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
+        return False
+    try:
+        from pathlib import Path
+        from google.cloud import storage as gcs
+        client = gcs.Client()
+        bucket = client.bucket(bucket_name)
+        model_dir = Path(model_path)
+        if not model_dir.exists():
+            logger.warning(f"Model path does not exist, skipping GCS upload: {model_path}")
+            return False
+        files = list(model_dir.rglob("*")) if model_dir.is_dir() else [model_dir]
+        uploaded = 0
+        for f in files:
+            if f.is_file():
+                blob_name = f"{gcs_key}/{f.relative_to(model_dir.parent)}"
+                bucket.blob(blob_name).upload_from_filename(str(f))
+                uploaded += 1
+        logger.info(f"GCS upload complete: {uploaded} files → gs://{bucket_name}/{gcs_key}/")
+        return True
+    except Exception as e:
+        logger.warning(f"GCS upload failed for {model_path}: {e}")
+        return False
+
+
 def selection_rejected_callable(**context):
-    """log rejection and continue pipeline without promotion."""
+    """log rejection, upload rejected models to GCS, and continue pipeline without promotion."""
     ti = context["ti"]
     decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
     reasons = {k: v.get("reasons", []) for k, v in decisions.items() if v.get("decision") == "reject"}
     logger.warning(f"Model promotion rejected: {reasons}")
+
 
     try:
         from storage.mongodb_client import MongoDBClient
@@ -600,13 +640,27 @@ def selection_rejected_callable(**context):
         try:
             client.connect()
             for model_type, decision in decisions.items():
-                if decision.get("decision") == "reject":
-                    client.save_model_lifecycle_event({
-                        "event_type": "rejection",
-                        "model_name": f"bertopic_{model_type}",
-                        "reasons": decision.get("reasons", []),
-                        "candidate_score": decision.get("candidate_score", 0),
-                    })
+                if decision.get("decision") != "reject":
+                    continue
+
+                train_task = f"train_{model_type}_model"
+                model_path = ti.xcom_pull(task_ids=train_task, key=f"{model_type}_model_path")
+                mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=f"{model_type}_mlflow_run_id")
+
+                # upload rejected model to GCS for audit/comparison
+                if model_path:
+                    run_label = mlflow_run_id or "unknown_run"
+                    gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/rejected/{run_label}"
+                    _upload_model_to_gcs(model_path, gcs_key)
+
+                client.save_model_lifecycle_event({
+                    "event_type": "rejection",
+                    "model_name": f"bertopic_{model_type}",
+                    "model_path": str(model_path) if model_path else None,
+                    "mlflow_run_id": mlflow_run_id,
+                    "reasons": decision.get("reasons", []),
+                    "candidate_score": decision.get("candidate_score", 0),
+                })
         finally:
             client.close()
     except Exception as e:
@@ -715,11 +769,17 @@ def register_and_promote_models_callable(**context):
             except Exception as e:
                 logger.warning(f"Failed to log promotion event for {model_type}: {e}")
 
+            # upload promoted model to GCS
+            run_label = mlflow_run_id or "unknown_run"
+            gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/promoted/{run_label}"
+            gcs_uploaded = _upload_model_to_gcs(model_path, gcs_key)
+
             promotion_results[model_type] = {
                 "promoted": True,
                 "version": version,
                 "model_path": str(model_path),
                 "mlflow_run_id": mlflow_run_id,
+                "gcs_key": gcs_key if gcs_uploaded else None,
             }
 
         ti.xcom_push(key="promotion_results", value=promotion_results)
@@ -738,11 +798,10 @@ def compute_patient_analytics_callable(**context):
         import pandas as pd
         from analytics.patient_analytics import PatientAnalytics
         from storage.mongodb_client import MongoDBClient
-        import config
 
         pa = PatientAnalytics()
         df = pd.read_parquet(
-            config.settings.PROCESSED_DATA_DIR / "journals" / "processed_journals.parquet"
+            settings.PROCESSED_DATA_DIR / "journals" / "processed_journals.parquet"
         )
 
         patient_ids = df["patient_id"].unique().tolist()

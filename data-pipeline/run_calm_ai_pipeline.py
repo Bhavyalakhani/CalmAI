@@ -23,7 +23,7 @@ logger = logging.getLogger("pipeline")
 # helpers
 
 DIVIDER = "=" * 60
-TOTAL_STEPS = 14
+TOTAL_STEPS = 17
 
 
 def step(number, name):
@@ -114,34 +114,10 @@ def run():
         logger.error(f"Validation FAILED with {total_failed} failures — halting pipeline")
         sys.exit(1)
 
-    logger.info("validation passed — continuing to bias analysis")
+    logger.info("validation passed — continuing to embedding")
 
-    # 6. bias analysis — conversations
-    step(6, "Bias analysis — conversations")
-    from bias_detection.conversation_bias import ConversationBiasAnalyzer
-
-    def bias_conversations():
-        report = ConversationBiasAnalyzer().run(skip_existing=False)
-        if report and report.underrepresented_topics:
-            logger.warning(f"  underrepresented topics (<3%): {report.underrepresented_topics}")
-        return report
-
-    _, metrics["bias_conversations"] = timed(bias_conversations)
-
-    # 7. bias analysis — journals
-    step(7, "Bias analysis — journals")
-    from bias_detection.journal_bias import JournalBiasAnalyzer
-
-    def bias_journals():
-        report = JournalBiasAnalyzer().run(skip_existing=False)
-        if report and report.sparse_patients:
-            logger.warning(f"  sparse patients (<10 entries): {len(report.sparse_patients)}")
-        return report
-
-    _, metrics["bias_journals"] = timed(bias_journals)
-
-    # 8. embed both datasets
-    step(8, "Embed conversations + journals")
+    # 6. embed both datasets
+    step(6, "Embed conversations + journals")
     from embedding.embedder import embed_conversations, embed_journals
 
     def run_embed_conversations():
@@ -156,8 +132,8 @@ def run():
     jour_emb_path, metrics["embed_journals"] = timed(run_embed_journals)
     logger.info(f"  journals      → {jour_emb_path}")
 
-    # 9. train journal topic model (requires bertopic / umap / hdbscan)
-    step(9, "Train journal topic model")
+    # 7. train journal topic model (requires bertopic / umap / hdbscan)
+    step(7, "Train journal topic model")
 
     def train_journal_model():
         import pandas as pd
@@ -190,8 +166,8 @@ def run():
         logger.warning(f"  journal model training skipped: {e}")
         metrics["train_journal_model"] = 0
 
-    # 10. train conversation topic model (requires bertopic / umap / hdbscan)
-    step(10, "Train conversation topic model")
+    # 8. train conversation topic model (requires bertopic / umap / hdbscan)
+    step(8, "Train conversation topic model")
 
     def train_conversation_model():
         import pandas as pd
@@ -224,8 +200,8 @@ def run():
         logger.warning(f"  conversation model training skipped: {e}")
         metrics["train_conversation_model"] = 0
 
-    # 11. train severity model (uses same conversation embeddings with severity prompt)
-    step(11, "Train severity model")
+    # 9. train severity model (uses same conversation embeddings with severity prompt)
+    step(9, "Train severity model")
 
     def train_severity_model():
         import pandas as pd
@@ -258,8 +234,229 @@ def run():
         logger.warning(f"  severity model training skipped: {e}")
         metrics["train_severity_model"] = 0
 
-    # 12. store in mongodb
-    step(12, "Store to MongoDB")
+    # 10. bias analysis — conversations (requires trained conversation model)
+    step(10, "Bias analysis — conversations")
+    from bias_detection.conversation_bias import ConversationBiasAnalyzer
+
+    def bias_conversations():
+        report = ConversationBiasAnalyzer().run(skip_existing=False)
+        if report and report.underrepresented_topics:
+            logger.warning(f"  underrepresented topics (<3%): {report.underrepresented_topics}")
+        return report
+
+    _, metrics["bias_conversations"] = timed(bias_conversations)
+
+    # 11. bias analysis — journals (requires trained journal model)
+    step(11, "Bias analysis — journals")
+    from bias_detection.journal_bias import JournalBiasAnalyzer
+
+    def bias_journals():
+        report = JournalBiasAnalyzer().run(skip_existing=False)
+        if report and report.sparse_patients:
+            logger.warning(f"  sparse patients (<10 entries): {len(report.sparse_patients)}")
+        return report
+
+    _, metrics["bias_journals"] = timed(bias_journals)
+
+    # 12. validate candidate models (holdout)
+    step(12, "Validate candidate models")
+
+    holdout_reports = {}
+
+    def validate_candidates():
+        import numpy as np
+        from topic_modeling.validation import TopicModelValidator
+        from bertopic import BERTopic
+
+        validator = TopicModelValidator()
+        reports = {}
+
+        model_configs = {
+            "journals": (jour_emb_path, "embedding_text", "entry_date", True),
+            "conversations": (conv_emb_path, "embedding_text", None, False),
+            "severity": (conv_emb_path, "embedding_text", None, False),
+        }
+
+        for model_type, (data_path, text_col, date_col, temporal) in model_configs.items():
+            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "latest" / "model"
+            if not model_path.exists():
+                logger.warning(f"  {model_type}: model not found at {model_path} — skipping")
+                continue
+            try:
+                model = BERTopic.load(str(model_path))
+                df = pd.read_parquet(data_path)
+
+                if temporal and date_col and date_col in df.columns:
+                    df = df.sort_values(date_col)
+                else:
+                    rng = np.random.default_rng(42)
+                    df = df.iloc[rng.permutation(len(df))]
+
+                split = int(len(df) * 0.8)
+                holdout_df = df.iloc[split:].reset_index(drop=True)
+                col = text_col if text_col in holdout_df.columns else holdout_df.columns[0]
+                docs = holdout_df[col].astype(str).tolist()
+                embeddings = np.array(holdout_df["embedding"].tolist()) if "embedding" in holdout_df.columns else None
+
+                report = validator.validate_holdout(model, docs, embeddings)
+                report["model_type"] = model_type
+                reports[model_type] = report
+                validator.save_report(report, f"{model_type}_holdout_validation.json")
+                logger.info(f"  {model_type}: status={report['status']}, silhouette={report['metrics'].get('silhouette_score', 'N/A')}")
+            except Exception as e:
+                logger.warning(f"  {model_type}: holdout validation failed — {e}")
+                reports[model_type] = {"status": "error", "error": str(e)}
+
+        return reports
+
+    try:
+        holdout_reports, metrics["validate_candidates"] = timed(validate_candidates)
+    except Exception as e:
+        logger.warning(f"  candidate validation skipped: {e}")
+        metrics["validate_candidates"] = 0
+
+    # 13. bias gate on candidates
+    step(13, "Bias gate — candidates")
+
+    bias_gate_results = {}
+
+    def bias_gate_candidates():
+        import numpy as np
+        from bias_detection.holdout_bias_gate import HoldoutBiasGate
+
+        gate = HoldoutBiasGate()
+        results = {}
+
+        for model_type, report in holdout_reports.items():
+            if report.get("status") == "error":
+                continue
+            try:
+                if model_type == "journals":
+                    df = pd.read_parquet(jour_emb_path)
+                    if "entry_date" in df.columns:
+                        df = df.sort_values("entry_date")
+                    split = int(len(df) * 0.8)
+                    holdout_df = df.iloc[split:].reset_index(drop=True)
+                else:
+                    df = pd.read_parquet(conv_emb_path)
+                    rng = np.random.default_rng(42)
+                    indices = rng.permutation(len(df))
+                    split = int(len(df) * 0.8)
+                    holdout_df = df.iloc[indices[split:]].reset_index(drop=True)
+
+                result = gate.evaluate(
+                    holdout_df=holdout_df,
+                    candidate_topics=report.get("holdout_topics", []),
+                    candidate_probs=None,
+                    num_topics=report.get("metrics", {}).get("num_topics", 0),
+                )
+                results[model_type] = result
+                logger.info(f"  {model_type}: passed={result['passed']}, max_disparity={result['max_disparity_delta']}")
+            except Exception as e:
+                logger.warning(f"  {model_type}: bias gate failed — {e}")
+                results[model_type] = {"passed": False, "error": str(e)}
+
+        return results
+
+    try:
+        bias_gate_results, metrics["bias_gate_candidates"] = timed(bias_gate_candidates)
+    except Exception as e:
+        logger.warning(f"  bias gate skipped: {e}")
+        metrics["bias_gate_candidates"] = 0
+
+    # 14. selection decision + promotion
+    step(14, "Selection decision + model promotion")
+
+    def selection_and_promote():
+        from topic_modeling.selection_policy import SelectionPolicy
+        from topic_modeling.experiment_tracker import ExperimentTracker
+        from topic_modeling.rollback import smoke_test_model
+        from storage.mongodb_client import MongoDBClient
+
+        policy = SelectionPolicy()
+        decisions = {}
+        promotion_results = {}
+        any_promoted = False
+
+        for model_type, candidate_report in holdout_reports.items():
+            if candidate_report.get("status") == "error":
+                decisions[model_type] = {"decision": "reject", "reasons": ["validation_error"]}
+                continue
+            bias_result = bias_gate_results.get(model_type)
+            decision = policy.evaluate(
+                candidate_report=candidate_report,
+                active_report=None,
+                bias_result=bias_result,
+            )
+            decisions[model_type] = decision
+            logger.info(f"  {model_type}: {decision['decision']} — {decision['reasons']}")
+            if decision["decision"] == "promote":
+                any_promoted = True
+
+        if not any_promoted:
+            logger.warning("  no models promoted — keeping existing models")
+            return {"decisions": decisions, "promoted": {}}
+
+        sample_docs = [
+            "I feel anxious about work",
+            "Had a productive therapy session today",
+            "Struggling with sleep and depression",
+        ]
+
+        for model_type, decision in decisions.items():
+            if decision.get("decision") != "promote":
+                continue
+
+            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "latest" / "model"
+            model_name = f"bertopic_{model_type}"
+
+            smoke = smoke_test_model(model_name, str(model_path), sample_docs)
+            if not smoke.get("passed", False):
+                logger.error(f"  {model_type}: smoke test failed — {smoke}")
+                promotion_results[model_type] = {"promoted": False, "reason": "smoke_test_failed"}
+                continue
+
+            tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
+            version = None
+            if tracker.registry_enabled:
+                tracker.start_run(run_name=f"{model_type}_promotion_local")
+                tracker.log_model_dir(str(model_path), artifact_path="model")
+                version = tracker.register_model(model_name, artifact_path="model")
+                if version:
+                    tracker.promote_to_production(model_name, version)
+                    logger.info(f"  {model_type}: promoted v{version} to Production")
+                tracker.end_run()
+
+            try:
+                mongo = MongoDBClient()
+                mongo.connect()
+                try:
+                    mongo.save_model_lifecycle_event({
+                        "event_type": "promotion",
+                        "model_name": model_name,
+                        "version": version,
+                        "model_path": str(model_path),
+                        "candidate_score": decision.get("candidate_score", 0),
+                        "smoke_test": smoke,
+                    })
+                finally:
+                    mongo.close()
+            except Exception as e:
+                logger.warning(f"  failed to log promotion event: {e}")
+
+            promotion_results[model_type] = {"promoted": True, "version": version}
+
+        return {"decisions": decisions, "promoted": promotion_results}
+
+    try:
+        lifecycle_result, metrics["selection_and_promote"] = timed(selection_and_promote)
+        logger.info(f"  promoted: {lifecycle_result.get('promoted', {})}")
+    except Exception as e:
+        logger.warning(f"  selection/promotion skipped: {e}")
+        metrics["selection_and_promote"] = 0
+
+    # 15. store in mongodb
+    step(15, "Store to MongoDB")
     from storage.mongodb_client import MongoDBClient
 
     client = MongoDBClient()
@@ -299,8 +496,8 @@ def run():
     finally:
         client.close()
 
-    # 13. compute patient analytics
-    step(13, "Compute patient analytics")
+    # 16. compute patient analytics
+    step(16, "Compute patient analytics")
 
     def compute_analytics():
         from analytics.patient_analytics import PatientAnalytics
@@ -329,8 +526,8 @@ def run():
         logger.warning(f"  patient analytics failed (non-fatal): {e}")
         metrics["compute_analytics"] = 0
 
-    # 14. dvc version tracking
-    step(14, "DVC version tracking")
+    # 17. dvc version tracking
+    step(17, "DVC version tracking")
     import subprocess
 
     def dvc_version():

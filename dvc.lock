@@ -5,8 +5,8 @@ stages:
     deps:
     - path: configs/config.py
       hash: md5
-      md5: a68c1bdf488ff529a735f876d6cd3558
-      size: 1769
+      md5: 9bc54c978139862a509f7637a00e4158
+      size: 3574
     - path: src/acquisition/data_downloader.py
       hash: md5
       md5: 6dafc10cb5dcb3131f70967dfc8c65a2
@@ -25,8 +25,8 @@ stages:
     deps:
     - path: configs/config.py
       hash: md5
-      md5: a68c1bdf488ff529a735f876d6cd3558
-      size: 1769
+      md5: 9bc54c978139862a509f7637a00e4158
+      size: 3574
     - path: configs/patient_profiles.yaml
       hash: md5
       md5: 5769c5e33ee6a929ed2e9a64b2ba9073
@@ -64,7 +64,7 @@ stages:
     outs:
     - path: data/processed/conversations/processed_conversations.parquet
       hash: md5
-      md5: 17306327744167b6033fbdfbe317314d
+      md5: 0939dd683c653c5996cbe76acd08b466
       size: 3753139
   preprocess_journals:
     cmd: python -c "from src.preprocessing.journal_preprocessor import 
@@ -85,7 +85,7 @@ stages:
     outs:
     - path: data/processed/journals/processed_journals.parquet
       hash: md5
-      md5: 20b9d7650c1c981da67510f212620ba7
+      md5: f028d6a9f6a2875b68c2965840e984c7
       size: 205165
   validate:
     cmd: python -c "from src.validation.schema_validator import SchemaValidator;
@@ -93,25 +93,25 @@ stages:
     deps:
     - path: data/processed/conversations/processed_conversations.parquet
       hash: md5
-      md5: 17306327744167b6033fbdfbe317314d
+      md5: 0939dd683c653c5996cbe76acd08b466
       size: 3753139
     - path: data/processed/journals/processed_journals.parquet
       hash: md5
-      md5: 20b9d7650c1c981da67510f212620ba7
+      md5: f028d6a9f6a2875b68c2965840e984c7
       size: 205165
     - path: src/validation/schema_validator.py
       hash: md5
-      md5: 263e70594429b2125f05476bc0571749
-      size: 20371
+      md5: 413ac287ec08d3b73be33642e23a9738
+      size: 20389
     outs:
     - path: reports/schema/conversations_schema_report.json
       hash: md5
-      md5: 2cd9ccde3960d5b4cf7c859e0bfbf2ce
-      size: 5229
+      md5: c6d080b8127c219a97ae585ee89f8fb1
+      size: 5453
     - path: reports/schema/journals_schema_report.json
       hash: md5
-      md5: 8ee86f1ee5ae7628fa665aa161383db6
-      size: 5488
+      md5: 9db8749dda8359ae8f0d767c48285745
+      size: 5739
   bias_conversations:
     cmd: python -c "from src.bias_detection.conversation_bias import 
       ConversationBiasAnalyzer; 
@@ -119,18 +119,18 @@ stages:
     deps:
     - path: data/processed/conversations/processed_conversations.parquet
       hash: md5
-      md5: 17306327744167b6033fbdfbe317314d
+      md5: 0939dd683c653c5996cbe76acd08b466
       size: 3753139
     - path: models/bertopic_conversations/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: 70e9729019df9597e45ed180fe1b9161.dir
+      size: 2110668
+      nfiles: 5
     - path: models/bertopic_severity/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: c1fcfb90cfd290db9678383bd026daa5.dir
+      size: 2107134
+      nfiles: 5
     - path: src/bias_detection/conversation_bias.py
       hash: md5
       md5: fae90eb5724e17c056c63c44a0d3e97c
@@ -142,33 +142,33 @@ stages:
     outs:
     - path: reports/bias/conversation_bias_report.json
       hash: md5
-      md5: b9d54cbf0a8eb9fffd1a647c3a969a7f
-      size: 36913
+      md5: 9e1fd4d7cd61f2065e8b80e508128cb2
+      size: 38745
     - path: reports/bias/response_length_by_topic.png
       hash: md5
-      md5: 5a5c730d503d22f33c5b858a5063d42a
-      size: 523297
+      md5: f46dfb006a5233d5f493d1054142c67d
+      size: 358948
     - path: reports/bias/severity_distribution.png
       hash: md5
-      md5: 9d7245fa6ec711d870ebd4114cba991b
-      size: 56867
+      md5: 7d1b2a0e71377d490b6a276a92f3ac29
+      size: 57601
     - path: reports/bias/topic_distribution.png
       hash: md5
-      md5: bc2d77f6f9d8d5b542930ac6da140c2c
-      size: 733818
+      md5: 224220f6fdd82327c991be9d5e742b6e
+      size: 607588
   bias_journals:
     cmd: python -c "from src.bias_detection.journal_bias import 
       JournalBiasAnalyzer; JournalBiasAnalyzer().run(skip_existing=False)"
     deps:
     - path: data/processed/journals/processed_journals.parquet
       hash: md5
-      md5: 20b9d7650c1c981da67510f212620ba7
+      md5: f028d6a9f6a2875b68c2965840e984c7
       size: 205165
     - path: models/bertopic_journals/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: e5c7642e4a5368bd98622e8d5fd5802d.dir
+      size: 355768
+      nfiles: 5
     - path: src/bias_detection/journal_bias.py
       hash: md5
       md5: aab0daa94f55383a0bbd087c490b3011
@@ -180,54 +180,54 @@ stages:
     outs:
     - path: reports/bias/journal_bias_report.json
       hash: md5
-      md5: 93e09b8a662cceecc515ab7dcd73186e
-      size: 13532
+      md5: 60c8cfe7f3149a5aaa4c0f4793243868
+      size: 14504
     - path: reports/bias/journal_entries_by_day.png
       hash: md5
-      md5: 4f47b61bc0d4b0067ba8dd309842a829
-      size: 51994
+      md5: b6ae41d48bd098cc4186caf03a6f115b
+      size: 45475
     - path: reports/bias/journal_entries_by_month.png
       hash: md5
-      md5: 031bf3e2d4c0ef71d2b3484176e21c78
-      size: 31122
+      md5: 1a928e5a47c6d700df01b96726e58022
+      size: 27741
     - path: reports/bias/journal_theme_distribution.png
       hash: md5
-      md5: 384fae4fb6019920678463a6a0d48027
-      size: 176087
+      md5: a5f9ef0e0eb91128b0355fc2d0b55986
+      size: 146241
   embed_conversations:
     cmd: python -c "from src.embedding.embedder import embed_conversations; 
       embed_conversations(force=True)"
     deps:
     - path: data/processed/conversations/processed_conversations.parquet
       hash: md5
-      md5: 17306327744167b6033fbdfbe317314d
+      md5: 0939dd683c653c5996cbe76acd08b466
       size: 3753139
     - path: src/embedding/embedder.py
       hash: md5
-      md5: 9764bbe58805e040719223e61ac1dff6
-      size: 12414
+      md5: b7ea753ca245e42a7a8a48ee4c2bbfa2
+      size: 12906
     outs:
     - path: data/processed/conversations/embedded_conversations.parquet
       hash: md5
-      md5: 30a604176ef9996aeb33b26c701c0ece
-      size: 10498933
+      md5: 991289645e9a51be1572424fc585d0f3
+      size: 10498156
   embed_journals:
     cmd: python -c "from src.embedding.embedder import embed_journals; 
       embed_journals(force=True)"
     deps:
     - path: data/processed/journals/processed_journals.parquet
       hash: md5
-      md5: 20b9d7650c1c981da67510f212620ba7
+      md5: f028d6a9f6a2875b68c2965840e984c7
       size: 205165
     - path: src/embedding/embedder.py
       hash: md5
-      md5: 9764bbe58805e040719223e61ac1dff6
-      size: 12414
+      md5: b7ea753ca245e42a7a8a48ee4c2bbfa2
+      size: 12906
     outs:
     - path: data/processed/journals/embedded_journals.parquet
       hash: md5
-      md5: 0a3dacbc45aecabe78bc1980f3b986ef
-      size: 2850174
+      md5: 6b3eeecfaa8393ca1483ede219abd89e
+      size: 2850030
   train_journal_model:
     cmd: python -c " import pandas as pd, numpy as np; from 
       src.topic_modeling.trainer import TopicModelTrainer; from 
@@ -243,26 +243,26 @@ stages:
     deps:
     - path: data/processed/journals/embedded_journals.parquet
       hash: md5
-      md5: 0a3dacbc45aecabe78bc1980f3b986ef
-      size: 2850174
+      md5: 6b3eeecfaa8393ca1483ede219abd89e
+      size: 2850030
     - path: src/topic_modeling/config.py
       hash: md5
       md5: 65093342b0807f814aec89053a7e1df6
       size: 7444
     - path: src/topic_modeling/trainer.py
       hash: md5
-      md5: e1dda978a6e479202949776138d86a7f
-      size: 24813
+      md5: ddf0c073ff2755d2d2178a66429fd20c
+      size: 25964
     - path: src/topic_modeling/validation.py
       hash: md5
-      md5: c394413f378dd97088720defe4eb2cfa
-      size: 9816
+      md5: 8371b61b12ec00e6c578132f70548bae
+      size: 23044
     outs:
     - path: models/bertopic_journals/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: e5c7642e4a5368bd98622e8d5fd5802d.dir
+      size: 355768
+      nfiles: 5
   train_conversation_model:
     cmd: python -c " import pandas as pd, numpy as np; from 
       src.topic_modeling.trainer import TopicModelTrainer; from 
@@ -278,26 +278,26 @@ stages:
     deps:
     - path: data/processed/conversations/embedded_conversations.parquet
       hash: md5
-      md5: 30a604176ef9996aeb33b26c701c0ece
-      size: 10498933
+      md5: 991289645e9a51be1572424fc585d0f3
+      size: 10498156
     - path: src/topic_modeling/config.py
       hash: md5
       md5: 65093342b0807f814aec89053a7e1df6
       size: 7444
     - path: src/topic_modeling/trainer.py
       hash: md5
-      md5: e1dda978a6e479202949776138d86a7f
-      size: 24813
+      md5: ddf0c073ff2755d2d2178a66429fd20c
+      size: 25964
     - path: src/topic_modeling/validation.py
       hash: md5
-      md5: c394413f378dd97088720defe4eb2cfa
-      size: 9816
+      md5: 8371b61b12ec00e6c578132f70548bae
+      size: 23044
     outs:
     - path: models/bertopic_conversations/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: 70e9729019df9597e45ed180fe1b9161.dir
+      size: 2110668
+      nfiles: 5
   train_severity_model:
     cmd: python -c " import pandas as pd, numpy as np; from 
       src.topic_modeling.trainer import TopicModelTrainer; from 
@@ -313,23 +313,23 @@ stages:
     deps:
     - path: data/processed/conversations/embedded_conversations.parquet
       hash: md5
-      md5: 30a604176ef9996aeb33b26c701c0ece
-      size: 10498933
+      md5: 991289645e9a51be1572424fc585d0f3
+      size: 10498156
     - path: src/topic_modeling/config.py
       hash: md5
       md5: 65093342b0807f814aec89053a7e1df6
       size: 7444
     - path: src/topic_modeling/trainer.py
       hash: md5
-      md5: e1dda978a6e479202949776138d86a7f
-      size: 24813
+      md5: ddf0c073ff2755d2d2178a66429fd20c
+      size: 25964
     - path: src/topic_modeling/validation.py
       hash: md5
-      md5: c394413f378dd97088720defe4eb2cfa
-      size: 9816
+      md5: 8371b61b12ec00e6c578132f70548bae
+      size: 23044
     outs:
     - path: models/bertopic_severity/
       hash: md5
-      md5: d751713988987e9331980363e24189ce.dir
-      size: 0
-      nfiles: 0
+      md5: c1fcfb90cfd290db9678383bd026daa5.dir
+      size: 2107134
+      nfiles: 5

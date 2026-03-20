@@ -11,7 +11,7 @@ import pandas as pd
 from pymongo import MongoClient, IndexModel, ASCENDING
 from pymongo.database import Database
 from pymongo.collection import Collection
-from pymongo.errors import BulkWriteError, OperationFailure
+from pymongo.errors import AutoReconnect, BulkWriteError, OperationFailure
 from pymongo.operations import SearchIndexModel
 
 import sys
@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
+VECTOR_BATCH_SIZE = 100  # smaller batches for large vector documents
 
 # all collections the pipeline writes to
 COLLECTION_NAMES = [
@@ -193,19 +194,26 @@ class MongoDBClient:
 
     # batch insert with bulkwriteerror handling
 
-    def _batch_insert(self, collection: Collection, documents: List[Dict[str, Any]]) -> int:
+    def _batch_insert(self, collection: Collection, documents: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> int:
         if not documents:
             return 0
 
         total_inserted = 0
-        for i in range(0, len(documents), BATCH_SIZE):
-            batch = documents[i : i + BATCH_SIZE]
-            try:
-                result = collection.insert_many(batch, ordered=False)
-                total_inserted += len(result.inserted_ids)
-            except BulkWriteError as e:
-                total_inserted += e.details.get("nInserted", 0)
-                logger.warning(f"Batch insert partial failure: {e.details.get('writeErrors', [])[:3]}")
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i : i + batch_size]
+            for attempt in range(3):
+                try:
+                    result = collection.insert_many(batch, ordered=False)
+                    total_inserted += len(result.inserted_ids)
+                    break
+                except BulkWriteError as e:
+                    total_inserted += e.details.get("nInserted", 0)
+                    logger.warning(f"Batch insert partial failure: {e.details.get('writeErrors', [])[:3]}")
+                    break
+                except AutoReconnect as e:
+                    if attempt == 2:
+                        raise
+                    logger.warning(f"AutoReconnect on batch {i//batch_size + 1}, retrying (attempt {attempt + 1}): {e}")
 
         return total_inserted
 
@@ -274,7 +282,7 @@ class MongoDBClient:
             raw_docs.append(raw_doc)
 
         logger.info(f"Inserting {len(df)} conversations into MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
         raw_count = self._batch_insert(self.conversations, raw_docs)
 
         logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw conversation docs")
@@ -349,7 +357,7 @@ class MongoDBClient:
             })
 
         logger.info(f"Inserting {len(df)} journals into MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
         raw_count = self._batch_insert(self.journals, raw_docs)
 
         logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw journal docs")
@@ -497,7 +505,7 @@ class MongoDBClient:
             })
 
         logger.info(f"Appending {len(df)} incoming journals to MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
 
         logger.info(f"Upserted {raw_upsert_count} journal docs, inserted {vec_count} vector docs")
         return {"rag_vectors": vec_count, "journals": raw_upsert_count}
