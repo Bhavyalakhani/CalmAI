@@ -638,7 +638,57 @@ class MongoDBClient:
             **metadata,
         })
         logger.info(f"Saved training metadata: journal_count={metadata.get('journal_count')}, "
-                     f"conversation_count={metadata.get('conversation_count')}")
+                    f"conversation_count={metadata.get('conversation_count')}")
+
+    # model lifecycle metadata
+
+    def save_model_lifecycle_event(self, event: Dict[str, Any]):
+        """save a model lifecycle event (promotion, rollback, gate decision).
+
+        events are stored in pipeline_metadata with type: model_lifecycle.
+        """
+        self.connect()
+        from datetime import datetime, timezone
+
+        doc = {
+            "type": "model_lifecycle",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **event,
+        }
+        self.pipeline_metadata.insert_one(doc)
+        logger.info(
+            f"Saved model lifecycle event: {event.get('event_type', 'unknown')} "
+            f"for {event.get('model_name', 'unknown')}"
+        )
+
+    def get_latest_lifecycle_event(
+        self, model_name: str, event_type: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """get the most recent lifecycle event for a model.
+
+        args:
+            model_name: e.g. "bertopic_journals"
+            event_type: filter by event type (e.g. "promotion", "rollback")
+
+        returns:
+            event dict or None
+        """
+        self.connect()
+        query = {"type": "model_lifecycle", "model_name": model_name}
+        if event_type:
+            query["event_type"] = event_type
+
+        doc = self.pipeline_metadata.find_one(query, sort=[("timestamp", -1)])
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def get_active_model_version(self, model_name: str) -> Optional[str]:
+        """get the active (production) model version from lifecycle events."""
+        event = self.get_latest_lifecycle_event(model_name, "promotion")
+        if event:
+            return event.get("version")
+        return None
 
     def get_collection_stats(self) -> Dict[str, int]:
         self.connect()

@@ -71,7 +71,8 @@ class EmbeddingService:
         logger.info(f"Model loaded in {elapsed:.2f}s | Embedding dimension: {self.embedding_dim}")
         return self.model
 
-    # encodes in batches and logs progress every 10 batches
+    # encodes in batches using a pre-allocated output array to avoid the extra
+    # memory copy that np.vstack() would create at the end
     def embed_texts(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
         self.load_model()
 
@@ -81,28 +82,35 @@ class EmbeddingService:
 
         total = len(texts)
         num_batches = (total + self.batch_size - 1) // self.batch_size
-        logger.info(f"Embedding {total} texts in {num_batches} batches (batch_size={self.batch_size})")
+        logger.info(
+            f"Embedding {total} texts in {num_batches} batches "
+            f"(batch_size={self.batch_size}, embedding_dim={self.embedding_dim})"
+        )
 
-        all_embeddings = []
+        # pre-allocate output array — avoids the full duplicate created by np.vstack
+        result = np.empty((total, self.embedding_dim), dtype=np.float32)
         start = time.time()
 
         for i in range(0, total, self.batch_size):
-            batch = texts[i : i + self.batch_size]
+            batch = texts[i : i + self.batch_size]  # noqa: E203
             batch_num = (i // self.batch_size) + 1
 
-            embeddings = self.model.encode(
+            batch_embeddings = self.model.encode(
                 batch,
                 show_progress_bar=False,
                 convert_to_numpy=True,
+                normalize_embeddings=False,
             )
-            all_embeddings.append(embeddings)
+            result[i : i + len(batch)] = batch_embeddings  # noqa: E203
 
             if show_progress and (batch_num % 10 == 0 or batch_num == num_batches):
                 elapsed = time.time() - start
                 rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
-                logger.info(f"  Batch {batch_num}/{num_batches} | {i + len(batch)}/{total} texts | {rate:.0f} texts/sec")
+                logger.info(
+                    f"  Batch {batch_num}/{num_batches} | "
+                    f"{i + len(batch)}/{total} texts | {rate:.0f} texts/sec"
+                )
 
-        result = np.vstack(all_embeddings)
         total_time = time.time() - start
         logger.info(f"Embedding complete: {total} texts in {total_time:.2f}s | Shape: {result.shape}")
         return result
@@ -114,8 +122,8 @@ class EmbeddingService:
         texts = df[text_column].fillna("").astype(str).tolist()
         embeddings = self.embed_texts(texts)
 
-        df = df.copy()
-        df["embedding"] = [emb.tolist() for emb in embeddings]
+        # assign directly without df.copy() to avoid an extra full dataframe clone
+        df["embedding"] = [row.tolist() for row in embeddings]
         logger.info(f"Added 'embedding' column ({self.embedding_dim} dims) to DataFrame")
         return df
 

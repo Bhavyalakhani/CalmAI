@@ -272,29 +272,71 @@ def conditional_retrain_callable(**context):
         from topic_modeling.config import TopicModelConfig
         from topic_modeling.trainer import TopicModelTrainer
         from topic_modeling.validation import TopicModelValidator
+        from topic_modeling.selection_policy import SelectionPolicy
+        from topic_modeling.rollback import smoke_test_model
 
         retrain_results = {}
+        validator = TopicModelValidator()
+        policy = SelectionPolicy()
+
+        def _retrain_single_model(model_type, df, prepare_fn, **train_kwargs):
+            """retrain a single model with validation and selection gate."""
+            cfg = TopicModelConfig(model_type=model_type)
+            trainer = TopicModelTrainer(cfg)
+            docs_and_extra = prepare_fn(df)
+            docs = docs_and_extra[0]
+            timestamps = docs_and_extra[1] if len(docs_and_extra) > 1 else None
+
+            kwargs = {"embeddings": None}
+            if timestamps:
+                kwargs["timestamps"] = timestamps
+            kwargs.update(train_kwargs)
+
+            result = trainer.train(docs, **kwargs)
+            # model already saved inside train() — use result["model_path"] directly
+            model_path = result.get("model_path") or str(trainer.save_model())
+
+            # validate with correct API
+            validation_report = validator.validate(result)
+
+            # selection gate (compare against no active — first run promotes freely)
+            decision = policy.evaluate(
+                candidate_report=validation_report,
+                active_report=None,
+            )
+
+            # smoke test if promoted
+            promoted = False
+            if decision.get("decision") == "promote":
+                smoke = smoke_test_model(
+                    f"bertopic_{model_type}", str(model_path),
+                    docs[:3] if len(docs) >= 3 else docs,
+                )
+                if smoke.get("passed", False):
+                    promoted = True
+                    logger.info(f"Model {model_type} promoted after retrain")
+                else:
+                    logger.warning(f"Smoke test failed for {model_type}: {smoke}")
+
+            return {
+                "num_topics": result["num_topics"],
+                "num_documents": result["num_documents"],
+                "outlier_ratio": result["outlier_ratio"],
+                "validation_status": validation_report.get("status", "unknown"),
+                "composite_score": validation_report.get("metrics", {}).get("composite_score", 0),
+                "decision": decision.get("decision", "unknown"),
+                "promoted": promoted,
+                "model_path": str(model_path),
+            }
 
         # retrain journal model
         if len(journal_df) >= 20:
             try:
-                cfg = TopicModelConfig(model_type="journals")
-                trainer = TopicModelTrainer(cfg)
-                docs, timestamps = trainer.prepare_journal_docs(journal_df)
-                result = trainer.train(docs, timestamps=timestamps)
-                model_path = trainer.save_model()
-
-                validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                quality = validator.validate_all()
-
-                retrain_results["journals"] = {
-                    "num_topics": result["num_topics"],
-                    "num_documents": result["num_documents"],
-                    "outlier_ratio": result["outlier_ratio"],
-                    "quality_pass": quality.get("overall_pass", False),
-                    "model_path": str(model_path),
-                }
-                logger.info(f"Journal model retrained: {result['num_topics']} topics from {len(docs)} docs")
+                retrain_results["journals"] = _retrain_single_model(
+                    "journals", journal_df,
+                    lambda df: TopicModelTrainer.prepare_journal_docs(df),
+                )
+                logger.info(f"Journal model retrained: {retrain_results['journals']}")
             except Exception as e:
                 logger.error(f"Journal model retrain failed: {e}")
                 retrain_results["journals"] = {"error": str(e)}
@@ -304,23 +346,11 @@ def conditional_retrain_callable(**context):
         # retrain conversation model
         if len(conversation_df) >= 20:
             try:
-                cfg = TopicModelConfig(model_type="conversations")
-                trainer = TopicModelTrainer(cfg)
-                docs, _ = trainer.prepare_conversation_docs(conversation_df)
-                result = trainer.train(docs)
-                model_path = trainer.save_model()
-
-                validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                quality = validator.validate_all()
-
-                retrain_results["conversations"] = {
-                    "num_topics": result["num_topics"],
-                    "num_documents": result["num_documents"],
-                    "outlier_ratio": result["outlier_ratio"],
-                    "quality_pass": quality.get("overall_pass", False),
-                    "model_path": str(model_path),
-                }
-                logger.info(f"Conversation model retrained: {result['num_topics']} topics from {len(docs)} docs")
+                retrain_results["conversations"] = _retrain_single_model(
+                    "conversations", conversation_df,
+                    lambda df: TopicModelTrainer.prepare_conversation_docs(df),
+                )
+                logger.info(f"Conversation model retrained: {retrain_results['conversations']}")
             except Exception as e:
                 logger.error(f"Conversation model retrain failed: {e}")
                 retrain_results["conversations"] = {"error": str(e)}
@@ -330,23 +360,11 @@ def conditional_retrain_callable(**context):
         # retrain severity model (uses conversation data)
         if len(conversation_df) >= 20:
             try:
-                cfg = TopicModelConfig(model_type="severity")
-                trainer = TopicModelTrainer(cfg)
-                docs, _ = trainer.prepare_conversation_docs(conversation_df)
-                result = trainer.train(docs)
-                model_path = trainer.save_model()
-
-                validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                quality = validator.validate_all()
-
-                retrain_results["severity"] = {
-                    "num_topics": result["num_topics"],
-                    "num_documents": result["num_documents"],
-                    "outlier_ratio": result["outlier_ratio"],
-                    "quality_pass": quality.get("overall_pass", False),
-                    "model_path": str(model_path),
-                }
-                logger.info(f"Severity model retrained: {result['num_topics']} topics from {len(docs)} docs")
+                retrain_results["severity"] = _retrain_single_model(
+                    "severity", conversation_df,
+                    lambda df: TopicModelTrainer.prepare_conversation_docs(df),
+                )
+                logger.info(f"Severity model retrained: {retrain_results['severity']}")
             except Exception as e:
                 logger.error(f"Severity model retrain failed: {e}")
                 retrain_results["severity"] = {"error": str(e)}

@@ -37,6 +37,19 @@ def mock_settings(tmp_path):
     s.INCOMING_JOURNAL_BATCH_INTERVAL = "0 */12 * * *"
     s.RETRAIN_ENTRY_THRESHOLD = 50
     s.RETRAIN_MAX_DAYS = 7
+    # model lifecycle
+    s.MODEL_MAX_OUTLIER_RATIO = 0.20
+    s.MODEL_MIN_SILHOUETTE = 0.10
+    s.MODEL_MIN_TOPIC_DIVERSITY = 0.50
+    s.MODEL_MAX_BIAS_DISPARITY = 0.10
+    s.MODEL_PROMOTION_MIN_SCORE_DELTA = 0.01
+    s.MLFLOW_TRACKING_URI = ""
+    s.MLFLOW_ARTIFACT_ROOT = ""
+    s.MODEL_REGISTRY_BUCKET = ""
+    s.MODEL_REGISTRY_PREFIX = "models/bertopic"
+    s.ENABLE_MODEL_SELECTION_GATE = True
+    s.ENABLE_MODEL_PROMOTION = True
+    s.ENABLE_MODEL_ROLLBACK = True
     s.ensure_directories = Mock()
     return s
 

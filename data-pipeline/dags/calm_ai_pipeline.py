@@ -203,7 +203,8 @@ def train_journal_model_callable(**context):
             embeddings = np.array(df["embedding"].tolist())
 
         result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps)
-        model_path = trainer.save_model()
+        # model already saved inside train() — use result["model_path"] directly
+        model_path = result.get("model_path") or str(trainer.save_model())
 
         # validate model quality
         validator = TopicModelValidator()
@@ -211,13 +212,15 @@ def train_journal_model_callable(**context):
         validator.save_report(validation_report)
 
         context["ti"].xcom_push(key="journal_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="journal_mlflow_run_id", value=result.get("mlflow_run_id"))
         context["ti"].xcom_push(key="journal_topics", value=result.get("num_topics", 0))
         context["ti"].xcom_push(key="journal_outlier_ratio", value=result.get("outlier_ratio", 0))
         context["ti"].xcom_push(key="journal_model_status", value=validation_report.get("status", "unknown"))
         context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(
             f"Journal topic model trained: {result['num_topics']} topics, "
-            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}, "
+            f"mlflow_run_id={result.get('mlflow_run_id')}"
         )
     except Exception as e:
         logger.error(f"train_journal_model failed: {e}")
@@ -255,7 +258,7 @@ def train_conversation_model_callable(**context):
             embeddings = np.array(df["embedding"].tolist())
 
         result = trainer.train(docs, embeddings=embeddings)
-        model_path = trainer.save_model()
+        model_path = result.get("model_path") or str(trainer.save_model())
 
         # validate model quality
         validator = TopicModelValidator()
@@ -263,13 +266,15 @@ def train_conversation_model_callable(**context):
         validator.save_report(validation_report)
 
         context["ti"].xcom_push(key="conversation_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="conversation_mlflow_run_id", value=result.get("mlflow_run_id"))
         context["ti"].xcom_push(key="conversation_topics", value=result.get("num_topics", 0))
         context["ti"].xcom_push(key="conversation_outlier_ratio", value=result.get("outlier_ratio", 0))
         context["ti"].xcom_push(key="conversation_model_status", value=validation_report.get("status", "unknown"))
         context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(
             f"Conversation topic model trained: {result['num_topics']} topics, "
-            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}, "
+            f"mlflow_run_id={result.get('mlflow_run_id')}"
         )
     except Exception as e:
         logger.error(f"train_conversation_model failed: {e}")
@@ -306,20 +311,22 @@ def train_severity_model_callable(**context):
             embeddings = np.array(df["embedding"].tolist())
 
         result = trainer.train(docs, embeddings=embeddings)
-        model_path = trainer.save_model()
+        model_path = result.get("model_path") or str(trainer.save_model())
 
         validator = TopicModelValidator()
         validation_report = validator.validate(result)
         validator.save_report(validation_report)
 
         context["ti"].xcom_push(key="severity_model_path", value=str(model_path))
+        context["ti"].xcom_push(key="severity_mlflow_run_id", value=result.get("mlflow_run_id"))
         context["ti"].xcom_push(key="severity_clusters", value=result.get("num_topics", 0))
         context["ti"].xcom_push(key="severity_outlier_ratio", value=result.get("outlier_ratio", 0))
         context["ti"].xcom_push(key="severity_model_status", value=validation_report.get("status", "unknown"))
         context["ti"].xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(
             f"Severity model trained: {result['num_topics']} clusters, "
-            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}"
+            f"outlier_ratio={result['outlier_ratio']}, status={validation_report['status']}, "
+            f"mlflow_run_id={result.get('mlflow_run_id')}"
         )
     except Exception as e:
         logger.error(f"train_severity_model failed: {e}")
@@ -365,6 +372,363 @@ def bias_journals_callable(**context):
     except Exception as e:
         logger.error(f"bias_journals failed: {e}")
         raise
+
+# model lifecycle tasks (run after training + bias)
+
+def validate_candidates_callable(**context):
+    """run holdout validation on all three candidate models.
+    computes clustering quality metrics (silhouette, calinski-harabasz, davies-bouldin, dbcv)
+    and topic quality metrics on a held-out slice of data."""
+    t0 = time.time()
+    ti = context["ti"]
+    try:
+        import pandas as pd
+        import numpy as np
+        from topic_modeling.validation import TopicModelValidator
+        from topic_modeling.config import TopicModelConfig
+        import config as cfg
+
+        validator = TopicModelValidator()
+        reports = {}
+
+        model_types = ["journals", "conversations", "severity"]
+        for model_type in model_types:
+            model_path = ti.xcom_pull(
+                task_ids=f"train_{model_type}_model" if model_type != "severity" else "train_severity_model",
+                key=f"{model_type}_model_path" if model_type != "severity" else "severity_model_path",
+            )
+            if not model_path:
+                logger.warning(f"No model path for {model_type} — skipping holdout validation")
+                continue
+
+            try:
+                from bertopic import BERTopic
+                model = BERTopic.load(model_path)
+
+                # load the data used for training
+                if model_type == "journals":
+                    data_path = ti.xcom_pull(task_ids="embed_journals", key="journals_embedded_path")
+                    if data_path:
+                        df = pd.read_parquet(data_path)
+                    else:
+                        df = pd.read_parquet(
+                            cfg.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+                        )
+                    # temporal holdout: use newest 20% as holdout
+                    if "entry_date" in df.columns:
+                        df = df.sort_values("entry_date")
+                    split_idx = int(len(df) * 0.8)
+                    holdout_df = df.iloc[split_idx:]
+                    text_col = "embedding_text" if "embedding_text" in holdout_df.columns else "content"
+                    holdout_docs = holdout_df[text_col].astype(str).tolist()
+                else:
+                    data_path = ti.xcom_pull(task_ids="embed_conversations", key="conversations_embedded_path")
+                    if data_path:
+                        df = pd.read_parquet(data_path)
+                    else:
+                        df = pd.read_parquet(
+                            cfg.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                        )
+                    # random holdout with fixed seed
+                    np.random.seed(42)
+                    indices = np.random.permutation(len(df))
+                    split_idx = int(len(df) * 0.8)
+                    holdout_df = df.iloc[indices[split_idx:]]
+                    text_col = "embedding_text" if "embedding_text" in holdout_df.columns else "context"
+                    holdout_docs = holdout_df[text_col].astype(str).tolist()
+
+                holdout_embeddings = None
+                if "embedding" in holdout_df.columns:
+                    holdout_embeddings = np.array(holdout_df["embedding"].tolist())
+
+                report = validator.validate_holdout(model, holdout_docs, holdout_embeddings)
+                report["model_type"] = model_type
+                reports[model_type] = report
+                validator.save_report(report, f"{model_type}_holdout_validation.json")
+                logger.info(
+                    f"Holdout validation for {model_type}: status={report['status']}, "
+                    f"silhouette={report['metrics'].get('silhouette_score', 'N/A')}"
+                )
+            except Exception as e:
+                logger.error(f"Holdout validation failed for {model_type}: {e}")
+                reports[model_type] = {"status": "error", "error": str(e)}
+
+        ti.xcom_push(key="holdout_reports", value=reports)
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(f"Candidate validation complete: {len(reports)} models evaluated")
+    except Exception as e:
+        logger.error(f"validate_candidates failed: {e}")
+        raise
+
+
+def bias_gate_candidates_callable(**context):
+    """run holdout bias gate on candidate models.
+    checks for per-slice disparities between candidate and active predictions."""
+    t0 = time.time()
+    ti = context["ti"]
+    try:
+        import pandas as pd
+        import numpy as np
+        from bias_detection.holdout_bias_gate import HoldoutBiasGate
+        import config as cfg
+
+        gate = HoldoutBiasGate()
+        bias_results = {}
+
+        holdout_reports = ti.xcom_pull(task_ids="validate_candidates", key="holdout_reports") or {}
+
+        for model_type, report in holdout_reports.items():
+            if report.get("status") == "error":
+                continue
+
+            try:
+                holdout_topics = report.get("holdout_topics", [])
+                num_topics = report.get("metrics", {}).get("num_topics", 0)
+
+                # load holdout df for slicing
+                if model_type == "journals":
+                    data_path = ti.xcom_pull(task_ids="embed_journals", key="journals_embedded_path")
+                    if data_path:
+                        df = pd.read_parquet(data_path)
+                    else:
+                        df = pd.read_parquet(
+                            cfg.settings.PROCESSED_DATA_DIR / "journals" / "embedded_journals.parquet"
+                        )
+                    if "entry_date" in df.columns:
+                        df = df.sort_values("entry_date")
+                    split_idx = int(len(df) * 0.8)
+                    holdout_df = df.iloc[split_idx:]
+                else:
+                    data_path = ti.xcom_pull(task_ids="embed_conversations", key="conversations_embedded_path")
+                    if data_path:
+                        df = pd.read_parquet(data_path)
+                    else:
+                        df = pd.read_parquet(
+                            cfg.settings.PROCESSED_DATA_DIR / "conversations" / "embedded_conversations.parquet"
+                        )
+                    np.random.seed(42)
+                    indices = np.random.permutation(len(df))
+                    split_idx = int(len(df) * 0.8)
+                    holdout_df = df.iloc[indices[split_idx:]]
+
+                holdout_df = holdout_df.reset_index(drop=True)
+
+                result = gate.evaluate(
+                    holdout_df=holdout_df,
+                    candidate_topics=holdout_topics,
+                    candidate_probs=None,
+                    num_topics=num_topics,
+                )
+                bias_results[model_type] = result
+                logger.info(
+                    f"Bias gate for {model_type}: passed={result['passed']}, "
+                    f"max_disparity={result['max_disparity_delta']}"
+                )
+            except Exception as e:
+                logger.error(f"Bias gate failed for {model_type}: {e}")
+                bias_results[model_type] = {"passed": False, "error": str(e)}
+
+        ti.xcom_push(key="bias_gate_results", value=bias_results)
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+    except Exception as e:
+        logger.error(f"bias_gate_candidates failed: {e}")
+        raise
+
+
+def selection_decision_callable(**context):
+    """run selection policy: hard gates + weighted scoring for each model type."""
+    t0 = time.time()
+    ti = context["ti"]
+    try:
+        from topic_modeling.selection_policy import SelectionPolicy
+        from topic_modeling.validation import TopicModelValidator
+
+        policy = SelectionPolicy()
+        holdout_reports = ti.xcom_pull(task_ids="validate_candidates", key="holdout_reports") or {}
+        bias_results = ti.xcom_pull(task_ids="bias_gate_candidates", key="bias_gate_results") or {}
+
+        decisions = {}
+        any_promoted = False
+
+        for model_type, candidate_report in holdout_reports.items():
+            if candidate_report.get("status") == "error":
+                decisions[model_type] = {"decision": "reject", "reasons": ["validation_error"]}
+                continue
+
+            bias_result = bias_results.get(model_type)
+            decision = policy.evaluate(
+                candidate_report=candidate_report,
+                active_report=None,  # first run — no active model to compare
+                bias_result=bias_result,
+            )
+            decisions[model_type] = decision
+            if decision["decision"] == "promote":
+                any_promoted = True
+
+            logger.info(f"Selection for {model_type}: {decision['decision']} — {decision['reasons']}")
+
+        ti.xcom_push(key="selection_decisions", value=decisions)
+        ti.xcom_push(key="any_promoted", value=any_promoted)
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(f"Selection complete: any_promoted={any_promoted}")
+    except Exception as e:
+        logger.error(f"selection_decision failed: {e}")
+        raise
+
+
+def selection_branch_callable(**context):
+    """branch based on selection decisions."""
+    ti = context["ti"]
+    any_promoted = ti.xcom_pull(task_ids="selection_decision", key="any_promoted")
+    if any_promoted:
+        logger.info("Selection gate PASSED — proceeding to promotion")
+        return "register_and_promote_models"
+    logger.info("Selection gate FAILED — keeping current models")
+    return "selection_rejected"
+
+
+def selection_rejected_callable(**context):
+    """log rejection and continue pipeline without promotion."""
+    ti = context["ti"]
+    decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
+    reasons = {k: v.get("reasons", []) for k, v in decisions.items() if v.get("decision") == "reject"}
+    logger.warning(f"Model promotion rejected: {reasons}")
+
+    try:
+        from storage.mongodb_client import MongoDBClient
+        client = MongoDBClient()
+        try:
+            client.connect()
+            for model_type, decision in decisions.items():
+                if decision.get("decision") == "reject":
+                    client.save_model_lifecycle_event({
+                        "event_type": "rejection",
+                        "model_name": f"bertopic_{model_type}",
+                        "reasons": decision.get("reasons", []),
+                        "candidate_score": decision.get("candidate_score", 0),
+                    })
+        finally:
+            client.close()
+    except Exception as e:
+        logger.warning(f"Failed to log rejection event: {e}")
+
+
+def register_and_promote_models_callable(**context):
+    """register promoted models with MLflow Model Registry and log lifecycle events.
+
+    uses the mlflow_run_id from training (where model artifacts are already logged)
+    so no new run is needed for registration.
+    """
+    t0 = time.time()
+    ti = context["ti"]
+    try:
+        from topic_modeling.experiment_tracker import ExperimentTracker
+        from topic_modeling.rollback import smoke_test_model
+        from storage.mongodb_client import MongoDBClient
+
+        decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
+        promotion_results = {}
+
+        for model_type, decision in decisions.items():
+            if decision.get("decision") != "promote":
+                continue
+
+            train_task = f"train_{model_type}_model"
+            model_path_key = f"{model_type}_model_path"
+            mlflow_run_id_key = f"{model_type}_mlflow_run_id"
+
+            model_path = ti.xcom_pull(task_ids=train_task, key=model_path_key)
+            mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=mlflow_run_id_key)
+
+            if not model_path:
+                logger.warning(f"No model path for {model_type} — skipping promotion")
+                continue
+
+            model_name = f"bertopic_{model_type}"
+            logger.info(
+                f"Promoting {model_name}: model_path={model_path}, "
+                f"mlflow_run_id={mlflow_run_id}"
+            )
+
+            # smoke test before promotion
+            sample_docs = [
+                "I feel anxious about work",
+                "Had a productive therapy session today",
+                "Struggling with sleep and depression",
+            ]
+            smoke = smoke_test_model(model_name, model_path, sample_docs)
+            if not smoke.get("passed", False):
+                logger.error(f"Smoke test failed for {model_type}: {smoke}")
+                promotion_results[model_type] = {"promoted": False, "reason": "smoke_test_failed", "smoke": smoke}
+                continue
+
+            logger.info(f"Smoke test passed for {model_type}: {smoke}")
+
+            # register from the training run (artifacts already logged there under "model/")
+            tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
+            version = None
+            if tracker.registry_enabled:
+                if mlflow_run_id:
+                    # register directly from the training run — no new run needed
+                    version = tracker.register_model(
+                        model_name,
+                        artifact_path="model",
+                        run_id=mlflow_run_id,
+                    )
+                else:
+                    # fallback: start a new run and log artifacts (e.g. if run_id was lost)
+                    logger.warning(
+                        f"No mlflow_run_id for {model_type} — starting fallback registration run"
+                    )
+                    tracker.start_run(run_name=f"{model_type}_registration_fallback")
+                    tracker.log_model_dir(model_path, artifact_path="model")
+                    version = tracker.register_model(model_name, artifact_path="model")
+                    tracker.end_run()
+
+                if version:
+                    ok = tracker.promote_to_production(model_name, version)
+                    if ok:
+                        logger.info(f"Promoted {model_name} v{version} to Production stage")
+                    else:
+                        logger.error(f"Stage transition to Production failed for {model_name} v{version}")
+                else:
+                    logger.error(f"Model registration failed for {model_name} — version not created")
+            else:
+                logger.info(f"Registry not enabled — {model_name} saved locally at {model_path}")
+
+            # log lifecycle event to MongoDB
+            try:
+                client = MongoDBClient()
+                client.connect()
+                try:
+                    client.save_model_lifecycle_event({
+                        "event_type": "promotion",
+                        "model_name": model_name,
+                        "version": version,
+                        "model_path": str(model_path),
+                        "mlflow_run_id": mlflow_run_id,
+                        "candidate_score": decision.get("candidate_score", 0),
+                        "smoke_test": smoke,
+                    })
+                finally:
+                    client.close()
+            except Exception as e:
+                logger.warning(f"Failed to log promotion event for {model_type}: {e}")
+
+            promotion_results[model_type] = {
+                "promoted": True,
+                "version": version,
+                "model_path": str(model_path),
+                "mlflow_run_id": mlflow_run_id,
+            }
+
+        ti.xcom_push(key="promotion_results", value=promotion_results)
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
+        logger.info(f"Promotion complete: {promotion_results}")
+    except Exception as e:
+        logger.error(f"register_and_promote_models failed: {e}")
+        raise
+
 
 # patient analytics (runs after bias, uses trained model)
 
@@ -573,6 +937,42 @@ with DAG(
 
     t_bias_complete = EmptyOperator(task_id="bias_complete")
 
+    # model lifecycle tasks
+    t_validate_candidates = PythonOperator(
+        task_id="validate_candidates",
+        python_callable=validate_candidates_callable,
+    )
+
+    t_bias_gate = PythonOperator(
+        task_id="bias_gate_candidates",
+        python_callable=bias_gate_candidates_callable,
+    )
+
+    t_selection = PythonOperator(
+        task_id="selection_decision",
+        python_callable=selection_decision_callable,
+    )
+
+    t_selection_branch = BranchPythonOperator(
+        task_id="selection_branch",
+        python_callable=selection_branch_callable,
+    )
+
+    t_selection_rejected = PythonOperator(
+        task_id="selection_rejected",
+        python_callable=selection_rejected_callable,
+    )
+
+    t_register_promote = PythonOperator(
+        task_id="register_and_promote_models",
+        python_callable=register_and_promote_models_callable,
+    )
+
+    t_lifecycle_complete = EmptyOperator(
+        task_id="lifecycle_complete",
+        trigger_rule="none_failed_min_one_success",
+    )
+
     t_compute_analytics = PythonOperator(
         task_id="compute_patient_analytics",
         python_callable=compute_patient_analytics_callable,
@@ -599,8 +999,11 @@ with DAG(
     # preprocessing_complete → validate → branch
     #   ├─ (pass) → [embed_conv, embed_jour] → embedding_complete →
     #   │  [train_jour_model, train_conv_model, train_severity_model] → training_complete →
-    #   │  [bias_conv, bias_jour] → bias_complete → compute_analytics →
-    #   │  store_to_mongodb → success_email → end
+    #   │  [bias_conv, bias_jour] → bias_complete →
+    #   │  validate_candidates → bias_gate_candidates → selection_decision → selection_branch
+    #   │    ├─ (promote) → register_and_promote_models → lifecycle_complete
+    #   │    └─ (reject) → selection_rejected → lifecycle_complete
+    #   │  lifecycle_complete → compute_analytics → store_to_mongodb → success_email → end
     #   └─ (fail) → validation_failed → end
 
     t_start >> [t_download_conv, t_generate_jour]
@@ -625,6 +1028,14 @@ with DAG(
 
     [t_bias_conv, t_bias_jour] >> t_bias_complete
 
-    t_bias_complete >> t_compute_analytics >> t_store >> t_success_email
+    # model lifecycle chain
+    t_bias_complete >> t_validate_candidates >> t_bias_gate >> t_selection >> t_selection_branch
+
+    t_selection_branch >> t_register_promote
+    t_selection_branch >> t_selection_rejected
+
+    [t_register_promote, t_selection_rejected] >> t_lifecycle_complete
+
+    t_lifecycle_complete >> t_compute_analytics >> t_store >> t_success_email
 
     [t_success_email, t_val_failed] >> t_end

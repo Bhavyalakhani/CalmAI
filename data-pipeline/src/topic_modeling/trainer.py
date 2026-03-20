@@ -43,6 +43,7 @@ class TopicModelTrainer:
         self.topics = None
         self.probs = None
         self.topic_info = None
+        self._saved_model_path: Optional[Path] = None
         self.tracker = ExperimentTracker(
             experiment_name=f"{self.config.model_type}_topic_model"
         )
@@ -320,6 +321,13 @@ class TopicModelTrainer:
             }
             self.tracker.log_metrics(metrics)
 
+            # save model to disk and log artifacts to the ACTIVE run before end_run()
+            # this ensures the run_id can be used directly for model registration
+            model_path = self._save_model_to_disk()
+            self.tracker.log_model_dir(str(model_path), artifact_path="model")
+            self._saved_model_path = model_path
+            logger.info(f"Model saved and logged to MLflow run {self.tracker.run_id}: {model_path}")
+
             # build result
             result = {
                 "model_type": self.config.model_type,
@@ -342,6 +350,7 @@ class TopicModelTrainer:
                 "config": self.config.to_dict(),
                 "run_name": run_name,
                 "mlflow_run_id": self.tracker.run_id,
+                "model_path": str(model_path),
             }
 
             logger.info(f"Training complete in {duration:.1f}s: {num_topics} topics from {len(docs)} docs")
@@ -426,8 +435,8 @@ class TopicModelTrainer:
 
     # save and load
 
-    def save_model(self, path: Optional[Path] = None) -> Path:
-        """save trained model using safetensors serialization"""
+    def _save_model_to_disk(self, path: Optional[Path] = None) -> Path:
+        """save model to disk only — called internally inside train() while run is still open."""
         if self.model is None:
             raise RuntimeError("No model to save. Train first.")
 
@@ -441,16 +450,25 @@ class TopicModelTrainer:
             save_ctfidf=True,
             save_embedding_model=self.config.embedding_model_name,
         )
-
         logger.info(f"Model saved to {model_path}")
-
-        # log model directory as mlflow artifact
-        try:
-            self.tracker.log_artifacts_dir(str(model_path))
-        except Exception as e:
-            logger.warning(f"Failed to log model artifacts to MLflow: {e}")
-
         return model_path
+
+    def save_model(self, path: Optional[Path] = None) -> Path:
+        """save trained model to disk.
+
+        if train() was already called, returns the path saved during training
+        (artifacts already logged to MLflow within that run).
+        if called standalone (e.g. after tune()), saves fresh to disk only.
+        """
+        if self.model is None:
+            raise RuntimeError("No model to save. Train first.")
+
+        # return existing path if already saved during train()
+        if hasattr(self, "_saved_model_path") and self._saved_model_path is not None:
+            logger.info(f"Model already saved at {self._saved_model_path} — returning existing path")
+            return self._saved_model_path
+
+        return self._save_model_to_disk(path)
 
     # hyperparameter tuning
 

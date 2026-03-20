@@ -77,7 +77,8 @@ External Services:
 | Containerization | Docker Compose (6 services) |
 | ML/Data | Python, Pandas, NumPy, Sentence-Transformers |
 | Topic Modeling | BERTopic (>=0.17.0), Gemini LLM labeling, three independent models (journals, conversations, severity) |
-| Experiment Tracking | MLflow (>=3.0.0), local file-backed at `mlruns/` |
+| Experiment Tracking | MLflow (>=3.0.0), supports file-backed or SQLite + Model Registry |
+| Model Lifecycle | Holdout validation, selection gates, bias gates, promotion, rollback |
 | Storage | MongoDB Atlas (unified vector store) |
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
@@ -302,6 +303,7 @@ data-pipeline/
 │   │   ├── slicer.py                # Generic data slicing utilities
 │   │   ├── conversation_bias.py     # Topic, severity, response quality analysis
 │   │   ├── journal_bias.py          # Theme, temporal, patient distribution analysis
+│   │   ├── holdout_bias_gate.py     # Holdout bias gate for model promotion decisions
 │   │   └── severity.py              # BERTopic severity singleton wrapper (classify_severity)
 │   │
 │   ├── embedding/
@@ -316,16 +318,18 @@ data-pipeline/
 │   ├── topic_modeling/
 │   │   ├── __init__.py              # Public API exports
 │   │   ├── config.py                # TopicModelConfig — shared BERTopic + MLflow settings
-│   │   ├── experiment_tracker.py    # MLflowTracker — experiment logging, model registry
+│   │   ├── experiment_tracker.py    # ExperimentTracker — MLflow tracking + Model Registry
 │   │   ├── trainer.py               # TopicModelTrainer — BERTopic training with Gemini LLM labeling
 │   │   ├── inference.py             # TopicModelInference — topic prediction from saved models
-│   │   ├── validation.py            # TopicModelValidator — quality metrics, coverage checks
+│   │   ├── validation.py            # TopicModelValidator — clustering metrics, holdout evaluation
+│   │   ├── selection_policy.py      # SelectionPolicy — hard gates + weighted scoring for promotion
+│   │   ├── rollback.py              # ModelRollback — automatic/manual rollback + smoke tests
 │   │   └── bias_analysis.py         # TopicBiasAnalyzer — bias detection using BERTopic topics
 │   │
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 338 tests across 15 files
+├── tests/                           # Tests across 19 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
@@ -341,7 +345,11 @@ data-pipeline/
 │   ├── test_analytics.py
 │   ├── test_incoming_pipeline.py
 │   ├── test_topic_modeling.py       # BERTopic trainer + inference tests
-│   └── test_topic_bias.py           # Topic-based bias analysis tests
+│   ├── test_topic_bias.py           # Topic-based bias analysis tests
+│   ├── test_model_selection.py      # Selection policy hard gates + scoring tests
+│   ├── test_holdout_bias_gate.py    # Holdout bias gate tests
+│   ├── test_validation_lifecycle.py # Clustering metrics, holdout, comparison tests
+│   └── test_model_registry.py       # MLflow registry + rollback + smoke tests
 │
 ├── data/
 │   ├── raw/                         # Downloaded and generated raw data
@@ -517,6 +525,58 @@ The `store_to_mongodb` task aggregates all task durations into the `pipeline_met
 4. **Idempotent tasks** - `skip_existing` pattern avoids redundant recomputation on retries
 5. **Short-circuit operator** (DAG 2) - skips entire pipeline when no new data exists, saving compute
 6. **Validation gate** (`BranchPythonOperator`) - halts pipeline early on schema failures, preventing wasted embedding/storage work
+
+---
+
+## Model Lifecycle
+
+The pipeline implements a complete model lifecycle for BERTopic topic models:
+
+### Pipeline Flow
+
+```
+train_candidates → validate_candidates → bias_gate → selection_decision
+  → [pass] register_and_promote → smoke_test → done
+  → [fail] keep_current_active → alert
+```
+
+### Validation Metrics
+
+**Clustering quality** (computed on UMAP embeddings, outliers excluded):
+- Silhouette Score — cohesion vs separation
+- Calinski-Harabasz Index — between/within cluster dispersion
+- Davies-Bouldin Index — average cluster similarity (lower is better)
+- DBCV — density-based cluster validity (most principled for HDBSCAN)
+
+**Agreement metrics** (candidate vs active on same holdout):
+- NMI (Normalized Mutual Information)
+- ARI (Adjusted Rand Index)
+- V-measure (homogeneity + completeness)
+
+### Promotion Gates
+
+Hard gates (must all pass):
+- `outlier_ratio <= 0.20`
+- `silhouette_score >= 0.10`
+- `topic_diversity >= 0.50`
+- `bias_disparity_delta <= 0.10`
+
+Then weighted composite score: candidate must beat active by margin (default `0.01`).
+
+### MLflow Model Registry
+
+When `MLFLOW_TRACKING_URI` is set to a SQLite or PostgreSQL URI, the pipeline uses MLflow Model Registry for versioned model management with stage transitions (Staging → Production → Archived).
+
+### Rollback
+
+Automatic rollback triggers on smoke test failure. Manual rollback available via `ModelRollback.rollback(model_name)`.
+
+### Configuration
+
+All thresholds are configurable via environment variables (see `.env.example`):
+- `MODEL_MAX_OUTLIER_RATIO`, `MODEL_MIN_SILHOUETTE`, `MODEL_MIN_TOPIC_DIVERSITY`
+- `MODEL_MAX_BIAS_DISPARITY`, `MODEL_PROMOTION_MIN_SCORE_DELTA`
+- `ENABLE_MODEL_SELECTION_GATE`, `ENABLE_MODEL_PROMOTION`, `ENABLE_MODEL_ROLLBACK`
 
 ---
 

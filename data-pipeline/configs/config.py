@@ -36,6 +36,34 @@ class Settings:
     RETRAIN_ENTRY_THRESHOLD: int = 50
     RETRAIN_MAX_DAYS: int = 7
 
+    # model lifecycle — promotion gates
+    MODEL_MAX_OUTLIER_RATIO: float = float(os.getenv("MODEL_MAX_OUTLIER_RATIO", "0.20"))
+    MODEL_MIN_SILHOUETTE: float = float(os.getenv("MODEL_MIN_SILHOUETTE", "0.10"))
+    MODEL_MIN_TOPIC_DIVERSITY: float = float(os.getenv("MODEL_MIN_TOPIC_DIVERSITY", "0.50"))
+    MODEL_MAX_BIAS_DISPARITY: float = float(os.getenv("MODEL_MAX_BIAS_DISPARITY", "0.10"))
+    MODEL_PROMOTION_MIN_SCORE_DELTA: float = float(os.getenv("MODEL_PROMOTION_MIN_SCORE_DELTA", "0.01"))
+
+    # model lifecycle — mlflow registry
+    # defaults to local sqlite so the registry is enabled in dev/docker without extra config
+    # override with a remote URI (e.g. postgresql://... or http://mlflow-server:5000) in production
+    MLFLOW_TRACKING_URI: str = os.getenv(
+        "MLFLOW_TRACKING_URI",
+        f"sqlite:///{Path(__file__).parent.parent / 'mlruns' / 'mlflow.db'}",
+    )
+    MLFLOW_ARTIFACT_ROOT: str = os.getenv(
+        "MLFLOW_ARTIFACT_ROOT",
+        str(Path(__file__).parent.parent / "mlruns" / "artifacts"),
+    )
+
+    # model lifecycle — artifact registry bucket (placeholder)
+    MODEL_REGISTRY_BUCKET: str = os.getenv("MODEL_REGISTRY_BUCKET", "")
+    MODEL_REGISTRY_PREFIX: str = os.getenv("MODEL_REGISTRY_PREFIX", "models/bertopic")
+
+    # model lifecycle — feature flags
+    ENABLE_MODEL_SELECTION_GATE: bool = os.getenv("ENABLE_MODEL_SELECTION_GATE", "true").lower() == "true"
+    ENABLE_MODEL_PROMOTION: bool = os.getenv("ENABLE_MODEL_PROMOTION", "true").lower() == "true"
+    ENABLE_MODEL_ROLLBACK: bool = os.getenv("ENABLE_MODEL_ROLLBACK", "true").lower() == "true"
+
     def ensure_directories(self):
         dirs = [
             self.RAW_DATA_DIR / "conversations",
