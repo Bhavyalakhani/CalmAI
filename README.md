@@ -97,7 +97,7 @@ CalmAI/
 │   │   ├── analytics/      #     Per-patient analytics computation
 │   │   ├── topic_modeling/  #    BERTopic training, inference, validation, MLflow tracking
 │   │   └── alerts/         #     Email notifications for DAG completion
-│   ├── tests/              #   338 pytest tests across 15 files
+│   ├── tests/              #   367 pytest tests across 19 files
 │   ├── models/             #   BERTopic model artifacts (safetensors)
 │   ├── mlruns/             #   MLflow experiment tracking (local)
 │   ├── configs/            #   Configuration and patient profiles
@@ -139,8 +139,6 @@ CalmAI/
 │   │   └── services/       #   db (Motor), auth_service (JWT/bcrypt), rag_service (LangChain)
 │   └── tests/              #   173 pytest tests across 11 files
 │
-├── dvc.yaml                # DVC pipeline stages (wdir: data-pipeline)
-├── .dvc/config             # DVC remote storage config (GCS)
 ├── docs/                   # Project documentation
 ├── assets/                 # Static assets
 └── logs/                   # Application logs
@@ -245,6 +243,7 @@ The data pipeline handles the complete data lifecycle including model training:
 | **Storage** | MongoDB Atlas with unified `rag_vectors` collection for vector search |
 | **Orchestration** | 2 Airflow DAGs — batch pipeline (23 tasks) + incoming journal micro-batch (11 tasks, every 12 hours) |
 | **Experiment Tracking** | MLflow local file-backed — logs hyperparameters, metrics, model artifacts per training run |
+| **Model Storage** | GCS bucket with versioned uploads — promoted models at `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`, rejected at `rejected/v_YYYYMMDD_HHMMSS/` |
 | **Versioning** | DVC with GCS remote for full artifact reproducibility |
 
 See [data-pipeline/README.md](data-pipeline/README.md) for comprehensive documentation.
@@ -261,7 +260,8 @@ Three independent BERTopic models for unsupervised topic discovery and severity 
 | **Representations** | Multi-aspect: KeyBERTInspired + Gemini LLM + MaximalMarginalRelevance |
 | **Tuning** | Grid search over UMAP/HDBSCAN hyperparameters with composite scoring (includes `SeverityHyperparameterSpace`) |
 | **Validation** | Quality metrics — topic diversity, outlier ratio, label uniqueness, Gini coefficient |
-| **Registry** | MLflow experiments + safetensors model artifacts at `models/bertopic_{type}/latest/` |
+| **Model Lifecycle** | Train → Holdout Validation → Bias Gate → Selection Policy → Smoke Test → GCS Upload |
+| **Registry** | MLflow experiments + safetensors model artifacts at `models/bertopic_{type}/latest/` + GCS versioned storage |
 | **Inference** | `TopicModelInference` loads saved models for real-time classification (backend + analytics + severity) |
 
 See [data-pipeline/src/topic_modeling/README.md](data-pipeline/src/topic_modeling/README.md) for detailed documentation.
@@ -325,16 +325,17 @@ Next.js 16 application with 14 routes, dark theme, and 199 Vitest tests.
 | ML/Embedding | Sentence-Transformers (`all-MiniLM-L6-v2`, 384 dims) |
 | LLM | Google Gemini API (`gemini-2.5-flash`) |
 | Storage | MongoDB Atlas (vector search + raw collections + staging + analytics) |
+| Model Storage | Google Cloud Storage (versioned promoted/rejected uploads) |
+| Pipeline Testing | pytest (367 tests across 19 files, mocked external services) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Pipeline Testing | pytest (338 tests across 15 files, mocked external services) |
 | CI/CD | GitHub Actions (lint, test, build, Docker validation) |
 
 ## Testing
 
-710 tests across all three components:
+739 tests across all three components:
 
 ```bash
-# data pipeline (338 tests across 15 files)
+# data pipeline (367 tests across 19 files)
 cd data-pipeline
 pytest tests/ -v --cov
 
@@ -356,7 +357,7 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull
 
 | Job | Description |
 |---|---|
-| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 338 pytest tests |
+| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 367 pytest tests |
 | **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests |
 | **Frontend Tests & Build** | Node 20, lint, 199 Vitest tests, production build |
 | **Docker Build** | Validates the Airflow Docker image builds successfully |

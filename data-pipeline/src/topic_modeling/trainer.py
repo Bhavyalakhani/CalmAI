@@ -244,6 +244,7 @@ class TopicModelTrainer:
         docs: List[str],
         embeddings: Optional[np.ndarray] = None,
         timestamps: Optional[List[str]] = None,
+        save_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """train a bertopic model on the provided documents.
 
@@ -251,6 +252,7 @@ class TopicModelTrainer:
             docs: list of text documents to cluster
             embeddings: pre-calculated embeddings (optional, computed if not provided)
             timestamps: list of date strings for topics_over_time (optional)
+            save_dir: override save directory (e.g. staging dir). defaults to latest/
 
         returns:
             dict with training results (topics, metrics, model info)
@@ -323,7 +325,7 @@ class TopicModelTrainer:
 
             # save model to disk and log artifacts to the ACTIVE run before end_run()
             # this ensures the run_id can be used directly for model registration
-            model_path = self._save_model_to_disk()
+            model_path = self._save_model_to_disk(save_dir)
             self.tracker.log_model_dir(str(model_path), artifact_path="model")
             self._saved_model_path = model_path
             logger.info(f"Model saved and logged to MLflow run {self.tracker.run_id}: {model_path}")

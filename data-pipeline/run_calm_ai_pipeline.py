@@ -139,7 +139,7 @@ def run():
         import pandas as pd
         import numpy as np
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="journals")
@@ -147,8 +147,9 @@ def run():
         df = pd.read_parquet(jour_emb_path)
         docs, timestamps = trainer.prepare_journal_docs(df)
         embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
-        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps)
-        model_path = trainer.save_model()
+        staging_dir = get_staging_dir("journals")
+        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps, save_dir=staging_dir)
+        model_path = trainer.save_model(staging_dir)
         validator = TopicModelValidator()
         report = validator.validate(result)
         validator.save_report(report)
@@ -173,7 +174,7 @@ def run():
         import pandas as pd
         import numpy as np
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="conversations")
@@ -181,8 +182,9 @@ def run():
         df = pd.read_parquet(conv_emb_path)
         docs, _ = trainer.prepare_conversation_docs(df)
         embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
-        result = trainer.train(docs, embeddings=embeddings)
-        model_path = trainer.save_model()
+        staging_dir = get_staging_dir("conversations")
+        result = trainer.train(docs, embeddings=embeddings, save_dir=staging_dir)
+        model_path = trainer.save_model(staging_dir)
         validator = TopicModelValidator()
         report = validator.validate(result)
         validator.save_report(report)
@@ -207,7 +209,7 @@ def run():
         import pandas as pd
         import numpy as np
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="severity")
@@ -215,8 +217,9 @@ def run():
         df = pd.read_parquet(conv_emb_path)
         docs, _ = trainer.prepare_conversation_docs(df)
         embeddings = np.array(df["embedding"].tolist()) if "embedding" in df.columns else None
-        result = trainer.train(docs, embeddings=embeddings)
-        model_path = trainer.save_model()
+        staging_dir = get_staging_dir("severity")
+        result = trainer.train(docs, embeddings=embeddings, save_dir=staging_dir)
+        model_path = trainer.save_model(staging_dir)
         validator = TopicModelValidator()
         report = validator.validate(result)
         validator.save_report(report)
@@ -278,9 +281,10 @@ def run():
         }
 
         for model_type, (data_path, text_col, date_col, temporal) in model_configs.items():
-            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "latest" / "model"
+            # validate against the staged candidate (not yet promoted to latest/)
+            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "staging" / "model"
             if not model_path.exists():
-                logger.warning(f"  {model_type}: model not found at {model_path} — skipping")
+                logger.warning(f"  {model_type}: staged model not found at {model_path} — skipping")
                 continue
             try:
                 model = BERTopic.load(str(model_path))
@@ -371,6 +375,7 @@ def run():
         from topic_modeling.selection_policy import SelectionPolicy
         from topic_modeling.experiment_tracker import ExperimentTracker
         from topic_modeling.rollback import smoke_test_model
+        from topic_modeling.config import promote_staging_to_latest, cleanup_staging
         from storage.mongodb_client import MongoDBClient
 
         policy = SelectionPolicy()
@@ -395,6 +400,9 @@ def run():
 
         if not any_promoted:
             logger.warning("  no models promoted — keeping existing models")
+            # clean up staging for all rejected models
+            for model_type in decisions:
+                cleanup_staging(model_type)
             return {"decisions": decisions, "promoted": {}}
 
         sample_docs = [
@@ -405,22 +413,31 @@ def run():
 
         for model_type, decision in decisions.items():
             if decision.get("decision") != "promote":
+                # rejected: clean up staging, keep existing latest/ untouched
+                cleanup_staging(model_type)
                 continue
 
-            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "latest" / "model"
+            # smoke test uses the staging model path
+            model_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "staging" / "model"
             model_name = f"bertopic_{model_type}"
 
             smoke = smoke_test_model(model_name, str(model_path), sample_docs)
             if not smoke.get("passed", False):
                 logger.error(f"  {model_type}: smoke test failed — {smoke}")
                 promotion_results[model_type] = {"promoted": False, "reason": "smoke_test_failed"}
+                cleanup_staging(model_type)
                 continue
+
+            # smoke test passed — promote staging → latest
+            promote_staging_to_latest(model_type)
+            latest_path = settings.MODELS_DIR / f"bertopic_{model_type}" / "latest" / "model"
+            logger.info(f"  {model_type}: staging → latest promoted")
 
             tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
             version = None
             if tracker.registry_enabled:
                 tracker.start_run(run_name=f"{model_type}_promotion_local")
-                tracker.log_model_dir(str(model_path), artifact_path="model")
+                tracker.log_model_dir(str(latest_path), artifact_path="model")
                 version = tracker.register_model(model_name, artifact_path="model")
                 if version:
                     tracker.promote_to_production(model_name, version)
@@ -435,7 +452,7 @@ def run():
                         "event_type": "promotion",
                         "model_name": model_name,
                         "version": version,
-                        "model_path": str(model_path),
+                        "model_path": str(latest_path),
                         "candidate_score": decision.get("candidate_score", 0),
                         "smoke_test": smoke,
                     })
@@ -526,42 +543,73 @@ def run():
         logger.warning(f"  patient analytics failed (non-fatal): {e}")
         metrics["compute_analytics"] = 0
 
-    # 17. dvc version tracking
-    step(17, "DVC version tracking")
-    import subprocess
+    # 17. upload model artifacts to GCS
+    step(17, "Upload models to GCS")
 
-    def dvc_version():
+    def upload_models_to_gcs():
+        bucket_name = settings.MODEL_REGISTRY_BUCKET
+        if not bucket_name:
+            logger.warning("MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
+            return
+
+        key_file = Path(settings.GCS_KEY_FILE)
+        if not key_file.exists():
+            logger.warning(f"GCS key file not found: {key_file} — skipping GCS upload")
+            return
+
+        # get promotion decisions from step 14
+        decisions = {}
         try:
-            dvc_root = str(settings.PROJECT_ROOT.parent)
+            decisions = lifecycle_result.get("decisions", {})
+        except NameError:
+            pass
 
-            # commit current artifact state to dvc.lock
-            # (artifacts are already declared as outputs in dvc.yaml)
-            result = subprocess.run(
-                ["dvc", "commit", "--force"],
-                cwd=dvc_root,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                logger.info(f"DVC commit complete: {result.stdout.strip()}")
-            else:
-                logger.warning(f"DVC commit warning: {result.stderr.strip()}")
+        try:
+            from google.cloud import storage as gcs
 
-            # push to remote
-            result = subprocess.run(
-                ["dvc", "push"],
-                cwd=dvc_root,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                logger.info(f"DVC push complete: {result.stdout.strip()}")
-            else:
-                logger.warning(f"DVC push warning: {result.stderr.strip()}")
+            client = gcs.Client.from_service_account_json(str(key_file))
+            bucket = client.bucket(bucket_name)
+            prefix = settings.MODEL_REGISTRY_PREFIX
+            version_tag = datetime.now(timezone.utc).strftime("v_%Y%m%d_%H%M%S")
+
+            # map model dir names to decision keys
+            model_map = {
+                "bertopic_journals": "journals",
+                "bertopic_conversations": "conversations",
+                "bertopic_severity": "severity",
+            }
+            total_uploaded = 0
+
+            for model_type, decision_key in model_map.items():
+                # promoted models are at latest/, rejected models were cleaned up (staging deleted)
+                # upload from latest/ for promoted, skip rejected (already uploaded by step 14 if needed)
+                decision = decisions.get(decision_key, {})
+                status = "promoted" if decision.get("decision") == "promote" else "rejected"
+
+                if status == "rejected":
+                    # rejected models' staging was already cleaned up — nothing to upload
+                    logger.info(f"  {model_type}: rejected — skipping GCS upload (no staging)")
+                    continue
+
+                model_dir = settings.MODELS_DIR / model_type / "latest" / "model"
+                if not model_dir.exists():
+                    logger.info(f"  {model_type}: not found at latest/, skipping")
+                    continue
+
+                files = [f for f in model_dir.rglob("*") if f.is_file()]
+                for f in files:
+                    rel = f.relative_to(model_dir)
+                    # versioned copy under promoted/ (no latest/ on GCS)
+                    bucket.blob(f"{prefix}/{model_type}/promoted/{version_tag}/{rel}").upload_from_filename(str(f))
+                    total_uploaded += 1
+
+                logger.info(f"  {model_type}: promoted/{version_tag}/ ({len(files)} files)")
+
+            logger.info(f"  GCS upload complete: {total_uploaded} files → gs://{bucket_name}/{prefix}/")
         except Exception as e:
-            logger.warning(f"DVC step failed (non-blocking): {e}")
+            logger.warning(f"GCS upload failed (non-blocking): {e}")
 
-    _, metrics["dvc_version"] = timed(dvc_version)
+    _, metrics["upload_models_gcs"] = timed(upload_models_to_gcs)
 
     # summary
     total = sum(metrics.values())

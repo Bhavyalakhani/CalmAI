@@ -140,7 +140,7 @@ class TestInsertConversations:
         inserted_docs = []
         original_batch = client._batch_insert
 
-        def capture(collection, docs):
+        def capture(collection, docs, batch_size=None):
             inserted_docs.extend(docs)
             return len(docs)
 

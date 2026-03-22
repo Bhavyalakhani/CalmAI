@@ -271,7 +271,7 @@ def verify_db_state():
                     if "error" in res:
                         print(f"    {model_type}: ERROR — {res['error']}")
                     else:
-                        print(f"    {model_type}: {res.get('num_topics', '?')} topics, pass={res.get('quality_pass', '?')}")
+                        print(f"    {model_type}: {res.get('num_topics', '?')} topics, status={res.get('status', res.get('quality_pass', '?'))}")
         else:
             print("  (none found)")
 
@@ -539,32 +539,133 @@ def run(args):
 
                 logger.info(f"  loaded {len(journal_df)} journals, {len(conversation_df)} conversations from MongoDB")
 
-                from topic_modeling.config import TopicModelConfig
+                from topic_modeling.config import TopicModelConfig, get_staging_dir, promote_staging_to_latest, cleanup_staging
                 from topic_modeling.trainer import TopicModelTrainer
                 from topic_modeling.validation import TopicModelValidator
+                from topic_modeling.selection_policy import SelectionPolicy
+                from topic_modeling.rollback import smoke_test_model
+                import numpy as np
 
                 retrain_results = {}
+                validator = TopicModelValidator()
+                policy = SelectionPolicy()
+
+                def _retrain_single_model(model_type, df, prepare_fn, **train_kwargs):
+                    """retrain a single model with full lifecycle:
+                    train → holdout validate → bias gate → selection policy → smoke test.
+                    trains to staging/ dir — only promoted models get copied to latest/."""
+                    cfg = TopicModelConfig(model_type=model_type)
+                    trainer = TopicModelTrainer(cfg)
+                    docs_and_extra = prepare_fn(df)
+                    docs = docs_and_extra[0]
+                    timestamps = docs_and_extra[1] if len(docs_and_extra) > 1 else None
+
+                    kwargs = {"embeddings": None}
+                    if timestamps:
+                        kwargs["timestamps"] = timestamps
+                    kwargs.update(train_kwargs)
+
+                    # 1. train to staging dir (not latest/)
+                    staging_dir = get_staging_dir(model_type)
+                    result = trainer.train(docs, save_dir=staging_dir, **kwargs)
+                    model_path = result.get("model_path") or str(trainer.save_model(staging_dir))
+
+                    # 2. basic validation
+                    validation_report = validator.validate(result)
+                    validator.save_report(validation_report)
+
+                    # 3. holdout validation + bias gate
+                    holdout_report = None
+                    bias_result = None
+                    try:
+                        from bertopic import BERTopic
+                        model = BERTopic.load(str(model_path))
+
+                        # split data 80/20 (temporal for journals, random for others)
+                        if model_type == "journals" and "entry_date" in df.columns:
+                            sorted_df = df.sort_values("entry_date")
+                            split_idx = int(len(sorted_df) * 0.8)
+                            holdout_df = sorted_df.iloc[split_idx:].reset_index(drop=True)
+                            holdout_docs = docs[split_idx:]
+                        else:
+                            rng = np.random.default_rng(42)
+                            indices = rng.permutation(len(df))
+                            split_idx = int(len(df) * 0.8)
+                            holdout_indices = indices[split_idx:]
+                            holdout_df = df.iloc[holdout_indices].reset_index(drop=True)
+                            holdout_docs = [docs[i] for i in holdout_indices]
+
+                        # holdout validation
+                        holdout_report = validator.validate_holdout(model, holdout_docs)
+                        holdout_report["model_type"] = model_type
+                        validator.save_report(holdout_report, f"{model_type}_retrain_holdout.json")
+
+                        # bias gate
+                        from bias_detection.holdout_bias_gate import HoldoutBiasGate
+                        gate = HoldoutBiasGate()
+                        holdout_topics, holdout_probs = model.transform(holdout_docs)
+                        bias_result = gate.evaluate(
+                            holdout_df=holdout_df,
+                            candidate_topics=list(holdout_topics),
+                            candidate_probs=holdout_probs,
+                            num_topics=result.get("num_topics", 0),
+                        )
+                        logger.info(
+                            f"  {model_type}: holdout={holdout_report.get('status')}, "
+                            f"bias_passed={bias_result.get('passed')}, "
+                            f"disparity={bias_result.get('max_disparity_delta')}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"  {model_type}: holdout/bias analysis failed (non-fatal): {e}")
+
+                    # 4. selection policy (compare against existing — None means promotes freely)
+                    candidate = holdout_report if holdout_report else validation_report
+                    decision = policy.evaluate(
+                        candidate_report=candidate,
+                        active_report=None,
+                        bias_result=bias_result,
+                    )
+
+                    # 5. smoke test if promoted
+                    promoted = False
+                    if decision.get("decision") == "promote":
+                        smoke = smoke_test_model(
+                            f"bertopic_{model_type}", str(model_path),
+                            docs[:3] if len(docs) >= 3 else docs,
+                        )
+                        if smoke.get("passed", False):
+                            promoted = True
+                            # copy staging → latest (this is the model inference will use)
+                            promote_staging_to_latest(model_type)
+                            logger.info(f"  {model_type}: promoted after retrain — staging → latest")
+                        else:
+                            logger.warning(f"  {model_type}: smoke test failed — {smoke}")
+
+                    if not promoted:
+                        # rejected: clean up staging, keep existing latest/ untouched
+                        cleanup_staging(model_type)
+
+                    return {
+                        "num_topics": result["num_topics"],
+                        "num_documents": result["num_documents"],
+                        "outlier_ratio": result["outlier_ratio"],
+                        "validation_status": validation_report.get("status", "unknown"),
+                        "holdout_status": holdout_report.get("status", "unknown") if holdout_report else "skipped",
+                        "bias_passed": bias_result.get("passed") if bias_result else None,
+                        "bias_max_disparity": bias_result.get("max_disparity_delta") if bias_result else None,
+                        "composite_score": (holdout_report or validation_report).get("metrics", {}).get("composite_score", 0),
+                        "decision": decision.get("decision", "unknown"),
+                        "promoted": promoted,
+                        "model_path": str(model_path),
+                    }
 
                 # retrain journal model
                 if len(journal_df) >= 20:
                     try:
-                        cfg = TopicModelConfig(model_type="journals")
-                        trainer = TopicModelTrainer(cfg)
-                        docs, timestamps = trainer.prepare_journal_docs(journal_df)
-                        result = trainer.train(docs, timestamps=timestamps)
-                        model_path = trainer.save_model()
-
-                        validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                        quality = validator.validate_all()
-
-                        retrain_results["journals"] = {
-                            "num_topics": result["num_topics"],
-                            "num_documents": result["num_documents"],
-                            "outlier_ratio": result["outlier_ratio"],
-                            "quality_pass": quality.get("overall_pass", False),
-                            "model_path": str(model_path),
-                        }
-                        logger.info(f"  journal model: {result['num_topics']} topics from {len(docs)} docs")
+                        retrain_results["journals"] = _retrain_single_model(
+                            "journals", journal_df,
+                            lambda df: TopicModelTrainer(TopicModelConfig(model_type="journals")).prepare_journal_docs(df),
+                        )
                     except Exception as e:
                         logger.error(f"  journal model retrain failed: {e}")
                         retrain_results["journals"] = {"error": str(e)}
@@ -574,23 +675,10 @@ def run(args):
                 # retrain conversation model
                 if len(conversation_df) >= 20:
                     try:
-                        cfg = TopicModelConfig(model_type="conversations")
-                        trainer = TopicModelTrainer(cfg)
-                        docs, _ = trainer.prepare_conversation_docs(conversation_df)
-                        result = trainer.train(docs)
-                        model_path = trainer.save_model()
-
-                        validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                        quality = validator.validate_all()
-
-                        retrain_results["conversations"] = {
-                            "num_topics": result["num_topics"],
-                            "num_documents": result["num_documents"],
-                            "outlier_ratio": result["outlier_ratio"],
-                            "quality_pass": quality.get("overall_pass", False),
-                            "model_path": str(model_path),
-                        }
-                        logger.info(f"  conversation model: {result['num_topics']} topics from {len(docs)} docs")
+                        retrain_results["conversations"] = _retrain_single_model(
+                            "conversations", conversation_df,
+                            lambda df: TopicModelTrainer(TopicModelConfig(model_type="conversations")).prepare_conversation_docs(df),
+                        )
                     except Exception as e:
                         logger.error(f"  conversation model retrain failed: {e}")
                         retrain_results["conversations"] = {"error": str(e)}
@@ -600,23 +688,10 @@ def run(args):
                 # retrain severity model
                 if len(conversation_df) >= 20:
                     try:
-                        cfg = TopicModelConfig(model_type="severity")
-                        trainer = TopicModelTrainer(cfg)
-                        docs, _ = trainer.prepare_conversation_docs(conversation_df)
-                        result = trainer.train(docs)
-                        model_path = trainer.save_model()
-
-                        validator = TopicModelValidator(trainer.model, trainer.topics, docs)
-                        quality = validator.validate_all()
-
-                        retrain_results["severity"] = {
-                            "num_topics": result["num_topics"],
-                            "num_documents": result["num_documents"],
-                            "outlier_ratio": result["outlier_ratio"],
-                            "quality_pass": quality.get("overall_pass", False),
-                            "model_path": str(model_path),
-                        }
-                        logger.info(f"  severity model: {result['num_topics']} topics from {len(docs)} docs")
+                        retrain_results["severity"] = _retrain_single_model(
+                            "severity", conversation_df,
+                            lambda df: TopicModelTrainer(TopicModelConfig(model_type="severity")).prepare_conversation_docs(df),
+                        )
                     except Exception as e:
                         logger.error(f"  severity model retrain failed: {e}")
                         retrain_results["severity"] = {"error": str(e)}
@@ -631,6 +706,40 @@ def run(args):
                     "reason": retrain_reason,
                     "results": retrain_results,
                 })
+
+                # upload models to GCS with versioning (promoted/ + rejected/)
+                bucket_name = settings.MODEL_REGISTRY_BUCKET
+                key_file = Path(settings.GCS_KEY_FILE)
+                if bucket_name and key_file.exists():
+                    try:
+                        from google.cloud import storage as gcs_storage
+                        gcs_client = gcs_storage.Client.from_service_account_json(str(key_file))
+                        bucket = gcs_client.bucket(bucket_name)
+                        prefix = settings.MODEL_REGISTRY_PREFIX
+                        version_tag = datetime.now(timezone.utc).strftime("v_%Y%m%d_%H%M%S")
+
+                        for model_type, res in retrain_results.items():
+                            if "error" in res:
+                                continue
+                            model_dir = Path(res["model_path"])
+                            if not model_dir.exists():
+                                continue
+
+                            # promoted → promoted/<version>/ only
+                            # rejected → rejected/<version>/ (kept for audit)
+                            status = "promoted" if res.get("promoted", False) else "rejected"
+                            files = [f for f in model_dir.rglob("*") if f.is_file()] if model_dir.is_dir() else [model_dir]
+                            for f in files:
+                                rel = f.relative_to(model_dir) if model_dir.is_dir() else f.name
+                                # versioned copy only (no latest/ on GCS)
+                                bucket.blob(f"{prefix}/bertopic_{model_type}/{status}/{version_tag}/{rel}").upload_from_filename(str(f))
+                            logger.info(f"  GCS upload: bertopic_{model_type} → {status}/{version_tag}/")
+                    except Exception as e:
+                        logger.warning(f"  GCS upload after retrain failed (non-blocking): {e}")
+                elif not bucket_name:
+                    logger.info("  MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
+                elif not key_file.exists():
+                    logger.info(f"  GCS key file not found: {key_file} — skipping GCS upload")
 
                 xcom.push("conditional_retrain", "retrain_triggered", True)
                 xcom.push("conditional_retrain", "retrain_reason", retrain_reason)

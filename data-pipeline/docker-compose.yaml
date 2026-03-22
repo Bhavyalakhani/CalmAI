@@ -84,6 +84,8 @@ x-airflow-common:
     ENABLE_MODEL_SELECTION_GATE: ${ENABLE_MODEL_SELECTION_GATE:-true}
     ENABLE_MODEL_PROMOTION: ${ENABLE_MODEL_PROMOTION:-true}
     ENABLE_MODEL_ROLLBACK: ${ENABLE_MODEL_ROLLBACK:-true}
+    # GCS service account key file path (mounted from host via GCS_KEY_FILE in .env)
+    GCS_KEY_FILE: /run/secrets/gcs-key.json
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -102,6 +104,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/reports:/opt/airflow/reports
     - ${AIRFLOW_PROJ_DIR:-.}/models:/opt/airflow/models
     - ${AIRFLOW_PROJ_DIR:-.}/mlruns:/opt/airflow/mlruns
+    # GCS service account key — mounted read-only into containers
+    - ./calm-ai-bucket-key.json:/run/secrets/gcs-key.json:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on

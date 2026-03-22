@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import sys
+import logging
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
 import config
+
+logger = logging.getLogger(__name__)
 
 
 # gemini prompt for generating topic labels
@@ -153,15 +156,39 @@ class TopicModelConfig:
 
 
 def get_models_dir(model_type: str = "journals") -> Path:
-    """get the directory for saving/loading topic models"""
-    if model_type == "journals":
-        model_dir = config.settings.PROJECT_ROOT / "models" / "bertopic_journals" / "latest"
-    elif model_type == "severity":
-        model_dir = config.settings.PROJECT_ROOT / "models" / "bertopic_severity" / "latest"
-    else:
-        model_dir = config.settings.PROJECT_ROOT / "models" / "bertopic_conversations" / "latest"
+    """get the directory for saving/loading topic models (latest promoted)"""
+    model_dir = config.settings.PROJECT_ROOT / "models" / f"bertopic_{model_type}" / "latest"
     model_dir.mkdir(parents=True, exist_ok=True)
     return model_dir
+
+
+def get_staging_dir(model_type: str = "journals") -> Path:
+    """get the staging directory for newly trained models (before promotion decision)"""
+    staging_dir = config.settings.PROJECT_ROOT / "models" / f"bertopic_{model_type}" / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    return staging_dir
+
+
+def promote_staging_to_latest(model_type: str) -> Path:
+    """copy staging model to latest (overwrite). returns latest path.
+    called only when a model passes the full lifecycle and is promoted."""
+    import shutil
+    staging = get_staging_dir(model_type)
+    latest = get_models_dir(model_type)
+    if staging.exists():
+        if latest.exists():
+            shutil.rmtree(latest)
+        shutil.copytree(staging, latest)
+        logger.info(f"Promoted {model_type}: staging → latest")
+    return latest
+
+
+def cleanup_staging(model_type: str) -> None:
+    """remove staging directory after promotion decision is complete."""
+    import shutil
+    staging = get_staging_dir(model_type)
+    if staging.exists():
+        shutil.rmtree(staging)
 
 
 def get_reports_dir() -> Path:

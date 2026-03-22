@@ -15,6 +15,7 @@ An end-to-end data pipeline for the CalmAI platform - acquires, preprocesses, va
 - [Pipeline Stages](#pipeline-stages)
 - [Pipeline Flow Optimization](#pipeline-flow-optimization)
 - [Airflow DAGs](#airflow-dags)
+- [GCS Model Storage](#gcs-model-storage)
 - [Data Versioning with DVC](#data-versioning-with-dvc)
 - [MongoDB Schema](#mongodb-schema)
 - [Testing](#testing)
@@ -66,7 +67,7 @@ External Services:
   • HuggingFace Datasets (conversation data)
   • Google Gemini API (synthetic journal generation)
   • MongoDB Atlas (vector store + raw collections)
-  • GCS Bucket (DVC remote for artifact versioning)
+  • GCS Bucket (versioned model artifact storage)
 ```
 
 ### Tech Stack
@@ -82,8 +83,9 @@ External Services:
 | Storage | MongoDB Atlas (unified vector store) |
 | LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
 | Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
+| Model Storage | Google Cloud Storage (versioned promoted/rejected uploads via `calm-ai-bucket-key.json`) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (338 tests, 15 test files) |
+| Testing | pytest (367 tests, 19 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -93,7 +95,7 @@ External Services:
 - **Git**
 - **MongoDB Atlas** account with a cluster and connection string
 - **Google Gemini API key** for synthetic journal generation
-- **(Optional)** GCS bucket + service account for DVC remote storage
+- **(Optional)** GCS bucket + service account key (`calm-ai-bucket-key.json`) for model artifact uploads
 
 ## Environment Setup
 
@@ -264,6 +266,8 @@ Runs all 14 pipeline steps sequentially with timing:
 | 11 | Train severity model (BERTopic) |
 | 12 | Store to MongoDB (+ classify conversations with topics & severity) |
 | 13 | Compute patient analytics (per-patient topic distribution) |
+| 14 | Model lifecycle — holdout validation, bias gate, selection policy, smoke test |
+| 15 | GCS upload — promoted models to `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`, rejected to `rejected/v_YYYYMMDD_HHMMSS/` |
 | 14 | DVC version tracking (`dvc commit --force` + `dvc push`) |
 
 At the end, a summary table shows duration per step and the total runtime.
@@ -397,7 +401,7 @@ data-pipeline/
 | `embedder.py` | Loads `sentence-transformers/all-MiniLM-L6-v2`, generates 384-dim embeddings in batches of 64. Separate functions for conversations, journals, and incoming journals. |
 | `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Logs pipeline runs to `pipeline_metadata`. |
 | `patient_analytics.py` | Per-patient topic classification using `TopicModelInference(model_type="journals")`. Returns "unclassified" when model unavailable. Computes topic distribution, topics over time, representative entries, and frequency analytics. |
-| `topic_modeling/` | BERTopic topic modeling module (7 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification (`predict_severity`, `predict_severity_series`). `TopicModelValidator` checks quality metrics. `TopicBiasAnalyzer` detects bias using BERTopic topics and severity model. Models saved to `models/bertopic_{type}/latest/model` (safetensors). **No train-test split** — BERTopic is an unsupervised clustering algorithm, so each model is trained on the full dataset via `fit_transform()`. Model quality is evaluated post-hoc using internal metrics (topic diversity, outlier ratio, size Gini, label uniqueness) rather than held-out test data. |
+| `topic_modeling/` | BERTopic topic modeling module (9 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification. `TopicModelValidator` checks quality metrics and holdout validation. `SelectionPolicy` enforces hard gates + weighted scoring for promotion. `ModelRollback` + `smoke_test_model` handle post-promotion verification and automatic rollback. `TopicBiasAnalyzer` detects bias using BERTopic topics. Models saved locally to `models/bertopic_{type}/latest/model` (safetensors) and uploaded to GCS with versioned `promoted/`/`rejected/` structure. Full lifecycle: train → holdout validation (80/20 split) → bias gate → selection policy → smoke test → GCS upload. |
 | `success_email.py` | Sends HTML email with task duration table, MongoDB collection stats, and pipeline summary on successful completion. |
 
 ---
@@ -453,7 +457,7 @@ start → fetch_new_entries → preprocess_entries → validate_entries → embe
 
 Uses a `ShortCircuitOperator` - if no new journal entries are found in MongoDB, the entire DAG run is skipped.
 
-The `conditional_retrain` task checks whether BERTopic models need retraining based on two thresholds: 50+ new journal entries accumulated since last training (`RETRAIN_ENTRY_THRESHOLD`) or 7+ days since last training (`RETRAIN_MAX_DAYS`). If either condition is met, all 3 BERTopic models (journals, conversations, severity) are retrained from the full corpus in MongoDB and logged to MLflow. Training metadata is persisted via `MongoDBClient.save_training_metadata()` in `pipeline_metadata` (with `type: "training_metadata"`). First run always saves baseline metadata.
+The `conditional_retrain` task checks whether BERTopic models need retraining based on two thresholds: 50+ new journal entries accumulated since last training (`RETRAIN_ENTRY_THRESHOLD`) or 7+ days since last training (`RETRAIN_MAX_DAYS`). If either condition is met, each model goes through the full lifecycle: **Train → Basic Validation → Holdout Validation (80/20 split) → Bias Gate → Selection Policy → Smoke Test → GCS Upload**. Promoted models are uploaded to `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`; rejected models to `rejected/v_YYYYMMDD_HHMMSS/` for audit. Training metadata is persisted via `MongoDBClient.save_training_metadata()` in `pipeline_metadata` (with `type: "training_metadata"`). First run always saves baseline metadata.
 
 Overview — Incoming Journals Pipeline
 
@@ -535,10 +539,12 @@ The pipeline implements a complete model lifecycle for BERTopic topic models:
 ### Pipeline Flow
 
 ```
-train_candidates → validate_candidates → bias_gate → selection_decision
-  → [pass] register_and_promote → smoke_test → done
-  → [fail] keep_current_active → alert
+train_candidates → validate_candidates → holdout_validation → bias_gate → selection_decision
+  → [pass] smoke_test → GCS upload (promoted/v_YYYYMMDD_HHMMSS/ + latest/) → done
+  → [fail] GCS upload (rejected/v_YYYYMMDD_HHMMSS/) → alert
 ```
+
+This lifecycle runs in all 4 pipeline files (2 DAGs + 2 local runners) with consistent logic.
 
 ### Validation Metrics
 
@@ -580,70 +586,52 @@ All thresholds are configurable via environment variables (see `.env.example`):
 
 ---
 
-## Data Versioning with DVC
+## GCS Model Storage
 
-DVC (Data Version Control) tracks all data artifacts so the pipeline is fully reproducible. Artifacts are stored in a Google Cloud Storage bucket.
+Trained BERTopic models are uploaded to a Google Cloud Storage bucket with versioned folder structure. This enables artifact traceability and rollback across both promoted and rejected models.
 
-> **Note:** DVC files (`dvc.yaml`, `dvc.lock`, `.dvc/config`, `.dvcignore`) live in the **project root** (`CalmAI/`), not inside `data-pipeline/`. Each stage in `dvc.yaml` uses `wdir: data-pipeline` so all relative paths resolve correctly.
+### GCS Folder Structure
+
+```
+gs://calm-ai_model_registry/models/bertopic/
+├── bertopic_journals/
+│   ├── promoted/
+│   │   ├── v_20260322_143012/   # timestamped version
+│   │   │   └── model/           # safetensors artifacts
+│   │   └── ...
+│   ├── rejected/
+│   │   ├── v_20260322_120500/
+│   │   │   └── model/
+│   │   └── ...
+│   └── latest/                  # always points to most recent promoted model
+│       └── model/
+├── bertopic_conversations/
+│   └── (same structure)
+└── bertopic_severity/
+    └── (same structure)
+```
 
 ### Setup
 
-```bash
-# DVC is included in requirements.txt, already installed
-# Initialize (already done — .dvc/ is at project root)
-dvc init
-
-# Configure remote (already configured in .dvc/config)
-dvc remote add -d gcs_remote gs://calmai-dvc-storage/data-pipeline
-```
-
-### Pipeline Stages
-
-The `dvc.yaml` (at project root) mirrors the Airflow DAG with 12 stages:
-
-| Stage | Outputs |
-|---|---|
-| `download_conversations` | `data/raw/conversations/*.parquet` |
-| `generate_journals` | `data/raw/journals/synthetic_journals.parquet` |
-| `preprocess_conversations` | `data/processed/conversations/processed_conversations.parquet` |
-| `preprocess_journals` | `data/processed/journals/processed_journals.parquet` |
-| `validate` | `reports/schema/*.json` |
-| `bias_conversations` | `reports/bias/conversation_bias_report.json` |
-| `bias_journals` | `reports/bias/journal_bias_report.json` |
-| `embed_conversations` | `data/processed/conversations/embedded_conversations.parquet` |
-| `embed_journals` | `data/processed/journals/embedded_journals.parquet` |
-| `train_journal_model` | `models/bertopic_journals/` (BERTopic safetensors) |
-| `train_conversation_model` | `models/bertopic_conversations/` (BERTopic safetensors) |
-| `train_severity_model` | `models/bertopic_severity/` (BERTopic safetensors) |
-
-### Commands
-
-```bash
-# Reproduce the full pipeline (runs only changed stages)
-dvc repro
-
-# Snapshot current artifact state
-dvc commit --force
-
-# Push artifacts to GCS
-dvc push
-
-# Pull artifacts from GCS (on another machine)
-dvc pull
-
-# Check status of tracked files
-dvc status
-```
+1. Place your GCS service account key as `data-pipeline/calm-ai-bucket-key.json` (gitignored)
+2. The key file path is configured via `GCS_KEY_FILE` in `.env` (default: `./calm-ai-bucket-key.json`)
+3. In Docker, the key is mounted read-only at `/run/secrets/gcs-key.json` via `docker-compose.yaml`
 
 ### How It Works
 
-- `dvc.yaml` declares each stage's command, dependencies (`deps`), and outputs (`outs`)
-- `dvc.lock` stores MD5 hashes of all deps and outs - this is committed to Git
-- Actual data files (parquets, JSONs, PNGs) are in `.gitignore` - Git only tracks their hashes
-- `dvc repro` compares current hashes to `dvc.lock` and only re-runs stages with changed inputs
-- `dvc push` / `dvc pull` syncs artifacts to/from the GCS bucket
+- After model training, the pipeline runs the full lifecycle: holdout validation → bias gate → selection policy → smoke test
+- **Promoted models**: uploaded to `promoted/v_YYYYMMDD_HHMMSS/` AND `latest/`
+- **Rejected models**: uploaded to `rejected/v_YYYYMMDD_HHMMSS/` only (kept for audit, not served)
+- GCS upload is non-blocking — failures are logged but don't fail the pipeline
+- If `MODEL_REGISTRY_BUCKET` is empty or the key file is missing, GCS upload is skipped silently
 
-> **Note**: DVC runs standalone (CLI) and is not part of the Airflow DAGs. This is standard practice, Airflow handles orchestration, DVC handles artifact versioning and reproducibility.
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `GCS_KEY_FILE` | `./calm-ai-bucket-key.json` | Path to GCS service account JSON key |
+| `MODEL_REGISTRY_BUCKET` | `calm-ai_model_registry` | GCS bucket name (no `gs://` prefix) |
+| `MODEL_REGISTRY_PREFIX` | `models/bertopic` | Path prefix inside the bucket |
 
 ---
 
@@ -687,7 +675,7 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (338 tests)
+### Test Summary (367 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
@@ -740,19 +728,7 @@ docker compose up airflow-init
 docker compose up -d
 # Trigger DAG from http://localhost:8080
 
-# 4. Pull DVC artifacts (instead of regenerating)
-dvc pull
 ```
-
-### With DVC (Skip Computation)
-
-If artifacts have been previously pushed to GCS, any team member can skip the computation-heavy steps:
-
-```bash
-dvc pull    # Downloads all parquets, reports, and embeddings from GCS
-```
-
-This gives you the exact same data artifacts as the original run, verified by MD5 hashes.
 
 ### Verification Checklist
 
@@ -763,7 +739,7 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
 - [ ] BERTopic models saved to `models/bertopic_journals/`, `models/bertopic_conversations/`, and `models/bertopic_severity/`
 - [ ] MLflow experiments tracked in `mlruns/`
-- [ ] All 338 tests passing (`pytest tests/ -v`)
+- [ ] All 367 tests passing (`pytest tests/ -v`)
 
 ---
 
@@ -781,4 +757,13 @@ This gives you the exact same data artifacts as the original run, verified by MD
 | `SMTP_USER` | No | SMTP username |
 | `SMTP_PASSWORD` | No | SMTP password / app password |
 | `SMTP_MAIL_FROM` | No | Sender email address |
-| `GOOGLE_APPLICATION_CREDENTIALS` | DVC | Path to GCS service account JSON key |
+| `GCS_KEY_FILE` | No | Path to GCS service account JSON key (default: `./calm-ai-bucket-key.json`) |
+| `MODEL_REGISTRY_BUCKET` | No | GCS bucket for model uploads (default: `calm-ai_model_registry`) |
+| `MODEL_REGISTRY_PREFIX` | No | Path prefix in GCS bucket (default: `models/bertopic`) |
+| `MODEL_MAX_OUTLIER_RATIO` | No | Max outlier ratio for promotion gate (default: `0.20`) |
+| `MODEL_MIN_SILHOUETTE` | No | Min silhouette score for promotion (default: `0.10`) |
+| `MODEL_MIN_TOPIC_DIVERSITY` | No | Min topic diversity for promotion (default: `0.50`) |
+| `MODEL_MAX_BIAS_DISPARITY` | No | Max bias disparity delta for promotion (default: `0.10`) |
+| `ENABLE_MODEL_SELECTION_GATE` | No | Enable selection policy gate (default: `true`) |
+| `ENABLE_MODEL_PROMOTION` | No | Enable model promotion to GCS (default: `true`) |
+| `ENABLE_MODEL_ROLLBACK` | No | Enable automatic rollback on smoke test failure (default: `true`) |

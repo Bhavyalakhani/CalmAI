@@ -147,6 +147,7 @@ ENV/
 
 # GCS service account keys
 calm-ai-dvc-key.json
+calm-ai-bucket-key.json
 gcs-key*.json
 *-credentials.json
 env.bak/

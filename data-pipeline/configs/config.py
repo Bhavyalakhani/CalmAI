@@ -60,6 +60,11 @@ class Settings:
     MODEL_REGISTRY_BUCKET: str = os.getenv("MODEL_REGISTRY_BUCKET", "")
     MODEL_REGISTRY_PREFIX: str = os.getenv("MODEL_REGISTRY_PREFIX", "models/bertopic")
 
+    # GCS service account key file path
+    # local dev: set GCS_KEY_FILE=./calm-ai-dvc-key.json in .env
+    # docker: mounted read-only at /run/secrets/gcs-key.json via docker-compose
+    GCS_KEY_FILE: str = os.getenv("GCS_KEY_FILE", "./calm-ai-bucket-key.json")
+
     # model lifecycle — feature flags
     ENABLE_MODEL_SELECTION_GATE: bool = os.getenv("ENABLE_MODEL_SELECTION_GATE", "true").lower() == "true"
     ENABLE_MODEL_PROMOTION: bool = os.getenv("ENABLE_MODEL_PROMOTION", "true").lower() == "true"

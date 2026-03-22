@@ -85,6 +85,8 @@ All topic classification flows through the trained models — there are no keywo
 | `inference.py` | 314 | `TopicModelInference` — loads saved models, predict topics, severity prediction (`predict_severity`, `predict_severity_series`), labels/keywords/distributions |
 | `validation.py` | 263 | `TopicModelValidator` — quality metrics (diversity, coherence, outlier ratio, Gini), pass/fail checks |
 | `bias_analysis.py` | 575 | `TopicBiasAnalyzer` — topic distribution balance, severity analysis (BERTopic-based), underrepresentation, patient coverage, temporal patterns |
+| `selection_policy.py` | ~120 | `SelectionPolicy` — hard gates (outlier ratio, silhouette, diversity, bias disparity) + weighted composite scoring for promotion decisions |
+| `rollback.py` | ~150 | `ModelRollback` — automatic rollback on smoke test failure, manual rollback, `smoke_test_model()` for post-promotion verification |
 | `experiment_tracker.py` | 107 | `MLflowTracker` — experiment logging, run management, model registry tagging. Uses `Path.as_uri()` for cross-platform MLflow URI support |
 
 ## Training Pipeline
@@ -225,6 +227,18 @@ The `TopicModelValidator` checks model quality after training:
 
 Validation reports are saved as JSON to `reports/model/`.
 
+### Holdout Validation
+
+After basic validation, models undergo holdout validation on a 20% held-out split:
+- **Journals**: temporal split (most recent 20% by `entry_date`)
+- **Conversations/Severity**: random split (seeded for reproducibility)
+
+Holdout metrics include clustering quality (Silhouette, Calinski-Harabasz, Davies-Bouldin, DBCV) computed on the holdout set. Results feed into the selection policy for promotion decisions.
+
+### Bias Gate
+
+`HoldoutBiasGate` evaluates topic distribution fairness on the holdout set. If `max_disparity_delta > MODEL_MAX_BIAS_DISPARITY` (default 0.10), the model is rejected.
+
 ## Bias Analysis
 
 `TopicBiasAnalyzer` uses the trained model to detect bias in the dataset:
@@ -250,7 +264,9 @@ MLflow UI: `cd data-pipeline && mlflow ui` → http://localhost:5000
 
 ## Model Registry
 
-Models are saved using BERTopic's safetensors serialization:
+Models are saved locally using BERTopic's safetensors serialization, then uploaded to GCS with versioned folder structure:
+
+### Local Storage
 
 ```
 data-pipeline/models/
@@ -264,6 +280,26 @@ data-pipeline/models/
     └── latest/
         └── model/          # safetensors artifacts
 ```
+
+### GCS Versioned Storage
+
+After training, each model goes through the full lifecycle (holdout validation → bias gate → selection policy → smoke test) and is uploaded to GCS:
+
+```
+gs://calm-ai_model_registry/models/bertopic/
+├── bertopic_journals/
+│   ├── promoted/v_YYYYMMDD_HHMMSS/model/   # timestamped promoted versions
+│   ├── rejected/v_YYYYMMDD_HHMMSS/model/   # rejected versions (for audit)
+│   └── latest/model/                        # always matches most recent promoted
+├── bertopic_conversations/
+│   └── (same structure)
+└── bertopic_severity/
+    └── (same structure)
+```
+
+- **Promoted**: passes all hard gates + scores higher than active model → `promoted/` + `latest/`
+- **Rejected**: fails a gate or scores lower → `rejected/` only (kept for audit)
+- GCS authentication: `gcs.Client.from_service_account_json(key_file)` — key file path from `GCS_KEY_FILE` config
 
 Model loading is a single call: `TopicModelInference(model_type="journals").load()`.
 

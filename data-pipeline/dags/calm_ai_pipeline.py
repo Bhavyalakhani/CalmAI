@@ -176,7 +176,7 @@ def train_journal_model_callable(**context):
     try:
         import pandas as pd
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="journals")
@@ -201,9 +201,10 @@ def train_journal_model_callable(**context):
         if "embedding" in df.columns:
             embeddings = np.array(df["embedding"].tolist())
 
-        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps)
-        # model already saved inside train() — use result["model_path"] directly
-        model_path = result.get("model_path") or str(trainer.save_model())
+        # train to staging dir — only promoted models get copied to latest/
+        staging_dir = get_staging_dir("journals")
+        result = trainer.train(docs, embeddings=embeddings, timestamps=timestamps, save_dir=staging_dir)
+        model_path = result.get("model_path") or str(trainer.save_model(staging_dir))
 
         # validate model quality
         validator = TopicModelValidator()
@@ -230,7 +231,7 @@ def train_conversation_model_callable(**context):
     try:
         import pandas as pd
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="conversations")
@@ -255,8 +256,10 @@ def train_conversation_model_callable(**context):
         if "embedding" in df.columns:
             embeddings = np.array(df["embedding"].tolist())
 
-        result = trainer.train(docs, embeddings=embeddings)
-        model_path = result.get("model_path") or str(trainer.save_model())
+        # train to staging dir — only promoted models get copied to latest/
+        staging_dir = get_staging_dir("conversations")
+        result = trainer.train(docs, embeddings=embeddings, save_dir=staging_dir)
+        model_path = result.get("model_path") or str(trainer.save_model(staging_dir))
 
         # validate model quality
         validator = TopicModelValidator()
@@ -283,7 +286,7 @@ def train_severity_model_callable(**context):
     try:
         import pandas as pd
         from topic_modeling.trainer import TopicModelTrainer
-        from topic_modeling.config import TopicModelConfig
+        from topic_modeling.config import TopicModelConfig, get_staging_dir
         from topic_modeling.validation import TopicModelValidator
 
         cfg = TopicModelConfig(model_type="severity")
@@ -307,8 +310,10 @@ def train_severity_model_callable(**context):
         if "embedding" in df.columns:
             embeddings = np.array(df["embedding"].tolist())
 
-        result = trainer.train(docs, embeddings=embeddings)
-        model_path = result.get("model_path") or str(trainer.save_model())
+        # train to staging dir — only promoted models get copied to latest/
+        staging_dir = get_staging_dir("severity")
+        result = trainer.train(docs, embeddings=embeddings, save_dir=staging_dir)
+        model_path = result.get("model_path") or str(trainer.save_model(staging_dir))
 
         validator = TopicModelValidator()
         validation_report = validator.validate(result)
@@ -598,28 +603,32 @@ def selection_branch_callable(**context):
 
 
 def _upload_model_to_gcs(model_path: str, gcs_key: str) -> bool:
-    """upload a local model directory to GCS. returns True on success."""
+    """upload a local model directory to GCS with versioning. returns True on success."""
     bucket_name = settings.MODEL_REGISTRY_BUCKET
     if not bucket_name:
         logger.warning("MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
         return False
     try:
         from pathlib import Path
+        from datetime import datetime, timezone
         from google.cloud import storage as gcs
-        client = gcs.Client()
+        key_file = settings.GCS_KEY_FILE
+        client = gcs.Client.from_service_account_json(key_file) if Path(key_file).exists() else gcs.Client()
         bucket = client.bucket(bucket_name)
         model_dir = Path(model_path)
         if not model_dir.exists():
             logger.warning(f"Model path does not exist, skipping GCS upload: {model_path}")
             return False
+        version_tag = datetime.now(timezone.utc).strftime("v_%Y%m%d_%H%M%S")
         files = list(model_dir.rglob("*")) if model_dir.is_dir() else [model_dir]
         uploaded = 0
         for f in files:
             if f.is_file():
-                blob_name = f"{gcs_key}/{f.relative_to(model_dir.parent)}"
-                bucket.blob(blob_name).upload_from_filename(str(f))
+                rel = f.relative_to(model_dir.parent)
+                # versioned copy only (no latest/ on GCS — local latest/ is the source of truth)
+                bucket.blob(f"{gcs_key}/{version_tag}/{rel}").upload_from_filename(str(f))
                 uploaded += 1
-        logger.info(f"GCS upload complete: {uploaded} files → gs://{bucket_name}/{gcs_key}/")
+        logger.info(f"GCS upload: {uploaded} files → gs://{bucket_name}/{gcs_key}/{version_tag}/")
         return True
     except Exception as e:
         logger.warning(f"GCS upload failed for {model_path}: {e}")
@@ -627,12 +636,14 @@ def _upload_model_to_gcs(model_path: str, gcs_key: str) -> bool:
 
 
 def selection_rejected_callable(**context):
-    """log rejection, upload rejected models to GCS, and continue pipeline without promotion."""
+    """log rejection, upload rejected models to GCS for audit, clean up staging.
+    local latest/ is NOT touched — the previously promoted model stays active."""
     ti = context["ti"]
     decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
     reasons = {k: v.get("reasons", []) for k, v in decisions.items() if v.get("decision") == "reject"}
     logger.warning(f"Model promotion rejected: {reasons}")
 
+    from topic_modeling.config import cleanup_staging
 
     try:
         from storage.mongodb_client import MongoDBClient
@@ -652,6 +663,9 @@ def selection_rejected_callable(**context):
                     run_label = mlflow_run_id or "unknown_run"
                     gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/rejected/{run_label}"
                     _upload_model_to_gcs(model_path, gcs_key)
+
+                # clean up staging — rejected model should not linger locally
+                cleanup_staging(model_type)
 
                 client.save_model_lifecycle_event({
                     "event_type": "rejection",
@@ -678,6 +692,7 @@ def register_and_promote_models_callable(**context):
     try:
         from topic_modeling.experiment_tracker import ExperimentTracker
         from topic_modeling.rollback import smoke_test_model
+        from topic_modeling.config import promote_staging_to_latest, cleanup_staging
         from storage.mongodb_client import MongoDBClient
 
         decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
@@ -717,6 +732,10 @@ def register_and_promote_models_callable(**context):
                 continue
 
             logger.info(f"Smoke test passed for {model_type}: {smoke}")
+
+            # promote: copy staging → latest (this is the model that inference will use)
+            latest_path = promote_staging_to_latest(model_type)
+            logger.info(f"Promoted {model_type} staging → latest at {latest_path}")
 
             # register from the training run (artifacts already logged there under "model/")
             tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")

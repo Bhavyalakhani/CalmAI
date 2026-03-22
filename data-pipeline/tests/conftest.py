@@ -50,6 +50,7 @@ def mock_settings(tmp_path):
     s.ENABLE_MODEL_SELECTION_GATE = True
     s.ENABLE_MODEL_PROMOTION = True
     s.ENABLE_MODEL_ROLLBACK = True
+    s.GCS_KEY_FILE = "/tmp/fake-gcs-key.json"
     s.ensure_directories = Mock()
     return s
 
