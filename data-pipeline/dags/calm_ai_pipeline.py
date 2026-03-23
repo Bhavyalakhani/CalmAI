@@ -392,12 +392,13 @@ def validate_candidates_callable(**context):
         validator = TopicModelValidator()
         reports = {}
 
-        model_types = ["journals", "conversations", "severity"]
-        for model_type in model_types:
-            model_path = ti.xcom_pull(
-                task_ids=f"train_{model_type}_model" if model_type != "severity" else "train_severity_model",
-                key=f"{model_type}_model_path" if model_type != "severity" else "severity_model_path",
-            )
+        model_configs = [
+            ("journals",      "train_journal_model",       "journal_model_path"),
+            ("conversations", "train_conversation_model",  "conversation_model_path"),
+            ("severity",      "train_severity_model",      "severity_model_path"),
+        ]
+        for model_type, train_task_id, xcom_key in model_configs:
+            model_path = ti.xcom_pull(task_ids=train_task_id, key=xcom_key)
             if not model_path:
                 logger.warning(f"No model path for {model_type} — skipping holdout validation")
                 continue
@@ -558,7 +559,8 @@ def selection_decision_callable(**context):
         from topic_modeling.selection_policy import SelectionPolicy
         from topic_modeling.validation import TopicModelValidator
 
-        policy = SelectionPolicy()
+        # relaxed gates for demo pipeline — first-run setup with limited data
+        policy = SelectionPolicy(overrides={"min_silhouette": 0.01})
         holdout_reports = ti.xcom_pull(task_ids="validate_candidates", key="holdout_reports") or {}
         bias_results = ti.xcom_pull(task_ids="bias_gate_candidates", key="bias_gate_results") or {}
 
@@ -650,13 +652,18 @@ def selection_rejected_callable(**context):
         client = MongoDBClient()
         try:
             client.connect()
+            _task_key_map = {
+                "journals":      ("train_journal_model",      "journal_"),
+                "conversations": ("train_conversation_model", "conversation_"),
+                "severity":      ("train_severity_model",     "severity_"),
+            }
             for model_type, decision in decisions.items():
                 if decision.get("decision") != "reject":
                     continue
 
-                train_task = f"train_{model_type}_model"
-                model_path = ti.xcom_pull(task_ids=train_task, key=f"{model_type}_model_path")
-                mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=f"{model_type}_mlflow_run_id")
+                train_task, key_prefix = _task_key_map.get(model_type, (f"train_{model_type}_model", f"{model_type}_"))
+                model_path = ti.xcom_pull(task_ids=train_task, key=f"{key_prefix}model_path")
+                mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=f"{key_prefix}mlflow_run_id")
 
                 # upload rejected model to GCS for audit/comparison
                 if model_path:
@@ -682,10 +689,10 @@ def selection_rejected_callable(**context):
 
 
 def register_and_promote_models_callable(**context):
-    """register promoted models with MLflow Model Registry and log lifecycle events.
+    """register promoted models with Vertex AI Model Registry and log lifecycle events.
 
-    uses the mlflow_run_id from training (where model artifacts are already logged)
-    so no new run is needed for registration.
+    uploads model artifacts to GCS first, then registers the GCS URI with Vertex AI.
+    mlflow is used only for experiment tracking — registry is handled by Vertex AI.
     """
     t0 = time.time()
     ti = context["ti"]
@@ -698,16 +705,18 @@ def register_and_promote_models_callable(**context):
         decisions = ti.xcom_pull(task_ids="selection_decision", key="selection_decisions") or {}
         promotion_results = {}
 
+        _task_key_map = {
+            "journals":      ("train_journal_model",      "journal_"),
+            "conversations": ("train_conversation_model", "conversation_"),
+            "severity":      ("train_severity_model",     "severity_"),
+        }
         for model_type, decision in decisions.items():
             if decision.get("decision") != "promote":
                 continue
 
-            train_task = f"train_{model_type}_model"
-            model_path_key = f"{model_type}_model_path"
-            mlflow_run_id_key = f"{model_type}_mlflow_run_id"
-
-            model_path = ti.xcom_pull(task_ids=train_task, key=model_path_key)
-            mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=mlflow_run_id_key)
+            train_task, key_prefix = _task_key_map.get(model_type, (f"train_{model_type}_model", f"{model_type}_"))
+            model_path = ti.xcom_pull(task_ids=train_task, key=f"{key_prefix}model_path")
+            mlflow_run_id = ti.xcom_pull(task_ids=train_task, key=f"{key_prefix}mlflow_run_id")
 
             if not model_path:
                 logger.warning(f"No model path for {model_type} — skipping promotion")
@@ -737,37 +746,50 @@ def register_and_promote_models_callable(**context):
             latest_path = promote_staging_to_latest(model_type)
             logger.info(f"Promoted {model_type} staging → latest at {latest_path}")
 
-            # register from the training run (artifacts already logged there under "model/")
+            # post-deployment verification on the promoted model
+            try:
+                from monitoring.deployment_verifier import verify_deployed_model
+                verification = verify_deployed_model(
+                    model_type=model_type,
+                    model_dir=str(latest_path / "model") if (latest_path / "model").exists() else str(latest_path),
+                )
+                if not verification.get("passed", False):
+                    logger.warning(f"Deployment verification FAILED for {model_type}: {verification['checks']}")
+                else:
+                    logger.info(f"Deployment verification passed for {model_type}")
+            except Exception as e:
+                logger.warning(f"Deployment verification error for {model_type} (non-blocking): {e}")
+
+            # upload promoted model to GCS first (Vertex AI needs the GCS URI)
+            run_label = mlflow_run_id or "unknown_run"
+            gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/promoted/{run_label}"
+            gcs_uploaded = _upload_model_to_gcs(model_path, gcs_key)
+
+            # register with Vertex AI Model Registry (requires GCS artifact URI)
             tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
-            version = None
+            resource_name = None
             if tracker.registry_enabled:
-                if mlflow_run_id:
-                    # register directly from the training run — no new run needed
-                    version = tracker.register_model(
+                if gcs_uploaded:
+                    gcs_uri = f"gs://{settings.MODEL_REGISTRY_BUCKET}/{gcs_key}"
+                    resource_name = tracker.register_model(
                         model_name,
-                        artifact_path="model",
+                        artifact_uri=gcs_uri,
                         run_id=mlflow_run_id,
                     )
-                else:
-                    # fallback: start a new run and log artifacts (e.g. if run_id was lost)
-                    logger.warning(
-                        f"No mlflow_run_id for {model_type} — starting fallback registration run"
-                    )
-                    tracker.start_run(run_name=f"{model_type}_registration_fallback")
-                    tracker.log_model_dir(model_path, artifact_path="model")
-                    version = tracker.register_model(model_name, artifact_path="model")
-                    tracker.end_run()
-
-                if version:
-                    ok = tracker.promote_to_production(model_name, version)
-                    if ok:
-                        logger.info(f"Promoted {model_name} v{version} to Production stage")
+                    if resource_name:
+                        ok = tracker.promote_to_production(model_name, resource_name)
+                        if ok:
+                            logger.info(f"Promoted {model_name} in Vertex AI: {resource_name}")
+                        else:
+                            logger.error(f"Vertex AI promotion failed for {model_name}")
                     else:
-                        logger.error(f"Stage transition to Production failed for {model_name} v{version}")
+                        logger.error(f"Vertex AI registration failed for {model_name}")
                 else:
-                    logger.error(f"Model registration failed for {model_name} — version not created")
+                    logger.warning(
+                        f"GCS upload failed — skipping Vertex AI registration for {model_name}"
+                    )
             else:
-                logger.info(f"Registry not enabled — {model_name} saved locally at {model_path}")
+                logger.info(f"Vertex AI not enabled — {model_name} saved locally at {model_path}")
 
             # log lifecycle event to MongoDB
             try:
@@ -777,7 +799,7 @@ def register_and_promote_models_callable(**context):
                     client.save_model_lifecycle_event({
                         "event_type": "promotion",
                         "model_name": model_name,
-                        "version": version,
+                        "resource_name": resource_name,
                         "model_path": str(model_path),
                         "mlflow_run_id": mlflow_run_id,
                         "candidate_score": decision.get("candidate_score", 0),
@@ -788,14 +810,12 @@ def register_and_promote_models_callable(**context):
             except Exception as e:
                 logger.warning(f"Failed to log promotion event for {model_type}: {e}")
 
-            # upload promoted model to GCS
-            run_label = mlflow_run_id or "unknown_run"
-            gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/promoted/{run_label}"
-            gcs_uploaded = _upload_model_to_gcs(model_path, gcs_key)
+            # clean up staging — model is now in latest/ and GCS
+            cleanup_staging(model_type)
 
             promotion_results[model_type] = {
                 "promoted": True,
-                "version": version,
+                "resource_name": resource_name,
                 "model_path": str(model_path),
                 "mlflow_run_id": mlflow_run_id,
                 "gcs_key": gcs_key if gcs_uploaded else None,

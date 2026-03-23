@@ -69,8 +69,9 @@ All topic classification flows through the trained models — there are no keywo
   └──────────────┘ └──────────────┘ └──────────────┘
 
                 ┌─────────────────────────────┐
-                │     MLflow (mlruns/)         │
-                │  Params, metrics, artifacts  │
+                │  Experiment Tracking         │
+                │  MLflow (mlruns/) — metrics   │
+                │  Vertex AI — model registry  │
                 │  experiment_tracker.py       │
                 └─────────────────────────────┘
 ```
@@ -87,7 +88,7 @@ All topic classification flows through the trained models — there are no keywo
 | `bias_analysis.py` | 575 | `TopicBiasAnalyzer` — topic distribution balance, severity analysis (BERTopic-based), underrepresentation, patient coverage, temporal patterns |
 | `selection_policy.py` | ~120 | `SelectionPolicy` — hard gates (outlier ratio, silhouette, diversity, bias disparity) + weighted composite scoring for promotion decisions |
 | `rollback.py` | ~150 | `ModelRollback` — automatic rollback on smoke test failure, manual rollback, `smoke_test_model()` for post-promotion verification |
-| `experiment_tracker.py` | 107 | `MLflowTracker` — experiment logging, run management, model registry tagging. Uses `Path.as_uri()` for cross-platform MLflow URI support |
+| `experiment_tracker.py` | 434 | `ExperimentTracker` — MLflow experiment tracking (metrics, params, artifacts) + Vertex AI Model Registry (cloud-native model versioning when `GCP_PROJECT_ID` is set) |
 
 ## Training Pipeline
 
@@ -253,7 +254,7 @@ Results feed into the main bias reports (`journal_bias_report.json`, `conversati
 
 ## Experiment Tracking
 
-All training runs are logged to **MLflow** (local file-backed at `data-pipeline/mlruns/`):
+All training runs are logged to **MLflow** (local SQLite at `data-pipeline/mlruns/mlflow.db`):
 
 - **Experiments**: `journal_topic_model`, `conversation_topic_model`, `severity_topic_model`
 - **Logged per run**: hyperparameters, validation metrics, composite score, model artifacts
@@ -264,7 +265,10 @@ MLflow UI: `cd data-pipeline && mlflow ui` → http://localhost:5000
 
 ## Model Registry
 
-Models are saved locally using BERTopic's safetensors serialization, then uploaded to GCS with versioned folder structure:
+Models are saved locally using BERTopic's safetensors serialization, uploaded to GCS, and registered in **Vertex AI Model Registry** for cloud-native versioning:
+
+- **Vertex AI**: When `GCP_PROJECT_ID` is set, models are registered via `aiplatform.Model.upload()` with the GCS artifact URI. Production models are tracked via labels (`status=production`).
+- **Fallback**: When `GCP_PROJECT_ID` is not set, Vertex AI is silently disabled — models are saved locally and to GCS only.
 
 ### Local Storage
 
@@ -363,13 +367,27 @@ train_journal_model  train_conversation_model  train_severity_model
                       ▼
                 bias_complete
                       ▼
-          compute_patient_analytics
+            validate_candidates
                       ▼
-              store_to_mongodb
+           bias_gate_candidates
                       ▼
-               success_email
+            selection_decision
                       ▼
-                     end
+         ┌── selection_branch ──┐
+         ▼                      ▼
+register_and_promote    selection_rejected
+         │                      │
+         └──────────┬───────────┘
+                    ▼
+            lifecycle_complete
+                    ▼
+        compute_patient_analytics
+                    ▼
+            store_to_mongodb
+                    ▼
+             success_email
+                    ▼
+                   end
 ```
 
 ## Testing
@@ -378,16 +396,21 @@ Tests are in `data-pipeline/tests/`:
 
 | File | Tests | Coverage |
 |------|-------|----------|
-| `test_topic_modeling.py` | ~35 | Trainer, inference, validator, config, experiment tracker |
-| `test_topic_bias.py` | ~15 | TopicBiasAnalyzer — distributions, coverage, temporal |
+| `test_topic_modeling.py` | 58 | Trainer, inference, validator, config, experiment tracker |
+| `test_topic_bias.py` | 17 | TopicBiasAnalyzer — distributions, coverage, temporal |
+| `test_model_registry.py` | 13 | Vertex AI registry, smoke test, model promotion |
+| `test_model_selection.py` | 11 | SelectionPolicy — hard gates, weighted scoring, promotion decisions |
+| `test_holdout_bias_gate.py` | 8 | Holdout bias gate evaluation, disparity checks |
+| `test_drift_detection.py` | 33 | Vocabulary, embedding, and topic drift detection |
+| `test_deployment_verifier.py` | 12 | Post-deployment model load, inference, and quality checks |
 
 Run tests:
 
 ```bash
 cd data-pipeline
-pytest tests/test_topic_modeling.py tests/test_topic_bias.py -v
+pytest tests/test_topic_modeling.py tests/test_topic_bias.py tests/test_model_registry.py tests/test_model_selection.py tests/test_holdout_bias_gate.py tests/test_drift_detection.py tests/test_deployment_verifier.py -v
 ```
 
-All external dependencies (BERTopic, UMAP, HDBSCAN, MLflow, Gemini) are mocked in tests. The test suite runs without GPU, model files, or API keys.
+All external dependencies (BERTopic, UMAP, HDBSCAN, MLflow, Vertex AI, Gemini) are mocked in tests. The test suite runs without GPU, model files, or API keys.
 
 > **Note**: UMAP and HDBSCAN are C-extension packages that may not install on all Python versions (e.g. Python 3.14). They are lazy-imported at runtime and available in the Airflow Docker container. IDE import errors are suppressed with `# type: ignore[import-untyped]`.

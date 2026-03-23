@@ -1,7 +1,7 @@
-# mlflow experiment tracking wrapper with model registry support
-# supports both file-backed (legacy) and sqlite-backed (registry) storage
-# tracks hyperparameters, metrics, and model artifacts per training run
-# provides model registration, stage transitions, and rollback
+# mlflow experiment tracking wrapper + vertex ai model registry
+# mlflow: tracks hyperparameters, metrics, and model artifacts per training run
+# vertex ai: model versioning and registration in gcp model registry
+# the two systems are independent — mlflow for experiment tracking, vertex ai for deployment
 
 import logging
 from pathlib import Path
@@ -17,19 +17,20 @@ logger = logging.getLogger(__name__)
 
 
 class ExperimentTracker:
-    """thin wrapper around mlflow for tracking topic model experiments.
+    """thin wrapper around mlflow for tracking topic model experiments,
+    with vertex ai model registry for cloud-native model versioning.
 
-    when MLFLOW_TRACKING_URI is set in config (e.g. sqlite:///path/mlflow.db),
-    the tracker uses that URI and enables model registry operations.
-    otherwise falls back to local file-backed storage.
+    mlflow handles experiment tracking (metrics, params, artifacts).
+    vertex ai handles model registration and versioning when GCP_PROJECT_ID is set.
     """
 
     def __init__(self, experiment_name: str = "journal_topic_model"):
         self.experiment_name = experiment_name
         self._run_id: Optional[str] = None
-        self._registry_enabled = False
         self._mlflow_available = False
+        self._vertex_ai_available = False
         self._setup_tracking()
+        self._setup_vertex_ai()
 
     def _cleanup_sqlite_migration_artifacts(self, tracking_uri: str):
         """drop stale Alembic temp tables left by interrupted MLflow migrations.
@@ -60,15 +61,14 @@ class ExperimentTracker:
     def _setup_tracking(self):
         """configure mlflow tracking URI and experiment.
 
-        any URI scheme enables the model registry (sqlite, postgresql, http).
-        the registry is used for model versioning, stage transitions, and rollback.
+        mlflow is used purely for experiment tracking (metrics, params, artifacts).
         if mlflow is not installed, tracking is silently disabled so training continues.
         """
         try:
             import mlflow
         except ModuleNotFoundError:
             logger.warning(
-                "mlflow not installed — experiment tracking and model registry disabled. "
+                "mlflow not installed — experiment tracking disabled. "
                 "Install mlflow to enable: pip install mlflow>=3.0.0"
             )
             self._mlflow_available = False
@@ -79,19 +79,18 @@ class ExperimentTracker:
         tracking_uri = config.settings.MLFLOW_TRACKING_URI
         if tracking_uri:
             mlflow.set_tracking_uri(tracking_uri)
-            self._registry_enabled = True
             self._cleanup_sqlite_migration_artifacts(tracking_uri)
             logger.info(
-                f"MLflow tracking (registry-enabled): experiment={self.experiment_name}, "
+                f"MLflow tracking: experiment={self.experiment_name}, "
                 f"uri={tracking_uri}"
             )
         else:
-            # fallback to local file-backed storage (no registry)
+            # fallback to local file-backed storage
             mlruns_dir = get_mlruns_dir()
             tracking_uri = mlruns_dir.resolve().as_uri()
             mlflow.set_tracking_uri(tracking_uri)
             logger.warning(
-                f"MLFLOW_TRACKING_URI not set — using file-backed storage (registry disabled): "
+                f"MLFLOW_TRACKING_URI not set — using file-backed storage: "
                 f"uri={tracking_uri}"
             )
 
@@ -107,9 +106,44 @@ class ExperimentTracker:
         except Exception as e:
             logger.warning(f"Failed to set MLflow experiment '{self.experiment_name}': {e}")
 
+    def _setup_vertex_ai(self):
+        """initialize Vertex AI Model Registry if GCP_PROJECT_ID is configured.
+
+        vertex ai is used for cloud-native model versioning and registration.
+        disabled gracefully if google-cloud-aiplatform is not installed or
+        GCP_PROJECT_ID is not set.
+        """
+        try:
+            from google.cloud import aiplatform  # noqa: F401
+        except ImportError:
+            logger.info(
+                "google-cloud-aiplatform not installed — Vertex AI Model Registry disabled"
+            )
+            self._vertex_ai_available = False
+            return
+
+        gcp_project = config.settings.GCP_PROJECT_ID
+        gcp_region = config.settings.GCP_REGION
+        if not gcp_project:
+            logger.info("GCP_PROJECT_ID not set — Vertex AI Model Registry disabled")
+            self._vertex_ai_available = False
+            return
+
+        try:
+            aiplatform.init(project=gcp_project, location=gcp_region)
+            self._vertex_ai_available = True
+            logger.info(
+                f"Vertex AI Model Registry enabled: project={gcp_project}, region={gcp_region}"
+            )
+        except Exception as e:
+            logger.warning(f"Vertex AI initialization failed: {e}")
+            self._vertex_ai_available = False
+
     @property
     def registry_enabled(self) -> bool:
-        return self._registry_enabled
+        return self._vertex_ai_available
+
+    # mlflow experiment tracking methods (unchanged)
 
     def start_run(self, run_name: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
         """start a new mlflow run and optionally log parameters"""
@@ -161,14 +195,13 @@ class ExperimentTracker:
         logger.info(f"Logged artifacts directory: {dir_path}")
 
     def log_model_dir(self, dir_path: str, artifact_path: str = "model"):
-        """log a trained model directory as an MLflow pyfunc model so it can be
-        registered via mlflow.register_model(runs:/<run_id>/<artifact_path>).
+        """log a trained model directory as an MLflow pyfunc model.
 
-        also stores the raw files as artifacts under the same path for direct access.
+        stores raw files as artifacts and wraps as pyfunc for mlflow tracking.
         always call this BEFORE end_run() so the active run is still open.
 
         args:
-            dir_path: local path to the model directory (e.g. models/bertopic_journals/latest/model)
+            dir_path: local path to the model directory
             artifact_path: subdirectory name in the artifact store (default: "model")
         """
         if not self._mlflow_available:
@@ -180,8 +213,6 @@ class ExperimentTracker:
             # log raw files so they're accessible directly
             mlflow.log_artifacts(dir_path, artifact_path=artifact_path)
 
-            # also log as a pyfunc model so mlflow.register_model can find it
-            # using a simple python_function wrapper that loads BERTopic from dir_path
             class _BERTopicWrapper(mlflow.pyfunc.PythonModel):
                 def load_context(self, context):
                     from bertopic import BERTopic
@@ -253,187 +284,150 @@ class ExperimentTracker:
                        for col in runs.columns if col.startswith("params.")},
         }
 
-    # model registry operations
+    # vertex ai model registry operations
 
     def register_model(
         self,
         model_name: str,
-        artifact_path: str = "model",
+        artifact_uri: Optional[str] = None,
         run_id: Optional[str] = None,
+        labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
-        """register a model version in the MLflow Model Registry.
+        """register a model in Vertex AI Model Registry.
 
         args:
-            model_name: registered model name (e.g. "bertopic_journals")
-            artifact_path: path within the run's artifacts
-            run_id: run to register from (defaults to current run)
+            model_name: display name (e.g. "bertopic_journals")
+            artifact_uri: GCS URI where model artifacts are stored
+            run_id: MLflow run_id (stored as label for traceability)
+            labels: additional labels to attach to the model version
 
         returns:
-            model version string, or None if registry not enabled
+            model resource name string, or None if registry not enabled
         """
-        if not self._registry_enabled:
-            logger.warning("Model registry not enabled — skipping registration")
+        if not self._vertex_ai_available:
+            logger.warning("Vertex AI Model Registry not enabled — skipping registration")
             return None
 
-        import mlflow
-
-        rid = run_id or self._run_id
-        if not rid:
-            logger.error("No run_id available for model registration")
+        if not artifact_uri:
+            logger.error("artifact_uri is required for Vertex AI model registration")
             return None
 
-        model_uri = f"runs:/{rid}/{artifact_path}"
+        from google.cloud import aiplatform
+
+        model_labels = {
+            "pipeline": "calmai",
+            "model_type": model_name.replace("bertopic_", ""),
+        }
+        if run_id:
+            # vertex ai labels must be lowercase alphanumeric + hyphens/underscores
+            model_labels["mlflow_run_id"] = run_id.replace("-", "_")[:63]
+        if labels:
+            model_labels.update(labels)
+
         try:
-            result = mlflow.register_model(model_uri, model_name)
-            version = result.version
-            logger.info(
-                f"Registered model '{model_name}' version {version} "
-                f"from run {rid}"
+            model = aiplatform.Model.upload(
+                display_name=model_name,
+                artifact_uri=artifact_uri,
+                serving_container_image_uri=(
+                    "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-3:latest"
+                ),
+                labels=model_labels,
             )
-            return str(version)
+            resource_name = model.resource_name
+            logger.info(
+                f"Registered model '{model_name}' in Vertex AI: {resource_name}"
+            )
+            return resource_name
         except Exception as e:
-            logger.error(f"Model registration failed: {e}")
+            logger.error(f"Vertex AI model registration failed: {e}")
             return None
 
-    def transition_model_stage(
-        self,
-        model_name: str,
-        version: str,
-        stage: str,
-    ) -> bool:
-        """transition a model version to a new stage.
+    def promote_to_production(self, model_name: str, model_resource_name: str) -> bool:
+        """mark a Vertex AI model version as production via labels.
 
         args:
-            model_name: registered model name
-            version: model version to transition
-            stage: target stage ("Staging", "Production", "Archived")
+            model_name: display name (for logging only)
+            model_resource_name: full resource name from register_model()
 
         returns:
             True if successful
         """
-        if not self._registry_enabled:
-            logger.warning("Model registry not enabled — skipping stage transition")
+        if not self._vertex_ai_available:
+            logger.warning("Vertex AI not enabled — skipping promotion")
             return False
 
-        from mlflow import MlflowClient
+        from google.cloud import aiplatform
 
         try:
-            client = MlflowClient()
-            client.transition_model_version_stage(
-                name=model_name,
-                version=version,
-                stage=stage,
-                archive_existing_versions=(stage == "Production"),
-            )
+            model = aiplatform.Model(model_resource_name)
+            current_labels = dict(model.labels) if model.labels else {}
+            current_labels["status"] = "production"
+            model.update(labels=current_labels)
             logger.info(
-                f"Transitioned '{model_name}' v{version} to stage '{stage}'"
+                f"Promoted '{model_name}' to production in Vertex AI: {model_resource_name}"
             )
             return True
         except Exception as e:
-            logger.error(f"Stage transition failed: {e}")
+            logger.error(f"Vertex AI promotion failed: {e}")
             return False
 
-    def promote_to_production(self, model_name: str, version: str) -> bool:
-        """promote a model version to Production stage.
-        automatically archives the current Production version."""
-        return self.transition_model_stage(model_name, version, "Production")
-
     def get_production_version(self, model_name: str) -> Optional[Dict[str, Any]]:
-        """get the current Production version of a registered model.
+        """get the current production model from Vertex AI Model Registry.
 
         returns:
-            dict with version, run_id, source, or None
+            dict with resource_name, display_name, artifact_uri, labels, create_time
+            or None if not found
         """
-        if not self._registry_enabled:
+        if not self._vertex_ai_available:
             return None
 
-        from mlflow import MlflowClient
+        from google.cloud import aiplatform
 
         try:
-            client = MlflowClient()
-            versions = client.get_latest_versions(model_name, stages=["Production"])
-            if not versions:
-                logger.info(f"No Production version found for '{model_name}'")
+            models = aiplatform.Model.list(
+                filter=f'display_name="{model_name}" AND labels.status="production"',
+                order_by="create_time desc",
+            )
+            if not models:
+                logger.info(f"No production version found for '{model_name}'")
                 return None
 
-            v = versions[0]
+            m = models[0]
             return {
-                "version": v.version,
-                "run_id": v.run_id,
-                "source": v.source,
-                "stage": v.current_stage,
-                "description": v.description or "",
+                "resource_name": m.resource_name,
+                "display_name": m.display_name,
+                "artifact_uri": m.artifact_uri,
+                "labels": dict(m.labels) if m.labels else {},
+                "create_time": str(m.create_time),
             }
         except Exception as e:
-            logger.warning(f"Could not fetch Production version for '{model_name}': {e}")
-            return None
-
-    def get_staging_version(self, model_name: str) -> Optional[Dict[str, Any]]:
-        """get the current Staging version of a registered model."""
-        if not self._registry_enabled:
-            return None
-
-        from mlflow import MlflowClient
-
-        try:
-            client = MlflowClient()
-            versions = client.get_latest_versions(model_name, stages=["Staging"])
-            if not versions:
-                return None
-
-            v = versions[0]
-            return {
-                "version": v.version,
-                "run_id": v.run_id,
-                "source": v.source,
-                "stage": v.current_stage,
-            }
-        except Exception as e:
-            logger.warning(f"Could not fetch Staging version for '{model_name}': {e}")
+            logger.warning(f"Could not fetch production version for '{model_name}': {e}")
             return None
 
     def get_archived_versions(self, model_name: str, limit: int = 5) -> list:
-        """get recent Archived versions (for rollback)."""
-        if not self._registry_enabled:
+        """get recent model versions from Vertex AI (for rollback reference)."""
+        if not self._vertex_ai_available:
             return []
 
-        from mlflow import MlflowClient
+        from google.cloud import aiplatform
 
         try:
-            client = MlflowClient()
-            versions = client.get_latest_versions(model_name, stages=["Archived"])
+            models = aiplatform.Model.list(
+                filter=f'display_name="{model_name}"',
+                order_by="create_time desc",
+            )
             results = []
-            for v in versions[:limit]:
+            for m in models[:limit]:
                 results.append({
-                    "version": v.version,
-                    "run_id": v.run_id,
-                    "source": v.source,
-                    "stage": v.current_stage,
+                    "resource_name": m.resource_name,
+                    "artifact_uri": m.artifact_uri,
+                    "labels": dict(m.labels) if m.labels else {},
+                    "create_time": str(m.create_time),
                 })
             return results
         except Exception as e:
-            logger.warning(f"Could not fetch Archived versions for '{model_name}': {e}")
+            logger.warning(f"Could not fetch versions for '{model_name}': {e}")
             return []
-
-    def download_model_artifacts(self, run_id: str, artifact_path: str = "model") -> Optional[str]:
-        """download model artifacts from a run.
-
-        returns:
-            local path to downloaded artifacts, or None on failure
-        """
-        if not self._mlflow_available:
-            return None
-        import mlflow
-
-        try:
-            local_path = mlflow.artifacts.download_artifacts(
-                run_id=run_id, artifact_path=artifact_path
-            )
-            logger.info(f"Downloaded artifacts from run {run_id} to {local_path}")
-            return local_path
-        except Exception as e:
-            logger.error(f"Artifact download failed: {e}")
-            return None
 
     @property
     def run_id(self) -> Optional[str]:

@@ -37,6 +37,11 @@ def mock_settings(tmp_path):
     s.INCOMING_JOURNAL_BATCH_INTERVAL = "0 */12 * * *"
     s.RETRAIN_ENTRY_THRESHOLD = 50
     s.RETRAIN_MAX_DAYS = 7
+    # drift detection
+    s.DRIFT_VOCAB_THRESHOLD = 0.65
+    s.DRIFT_EMBEDDING_THRESHOLD = 0.30
+    s.DRIFT_TOPIC_THRESHOLD = 0.25
+    s.ENABLE_DRIFT_DETECTION = True
     # model lifecycle
     s.MODEL_MAX_OUTLIER_RATIO = 0.20
     s.MODEL_MIN_SILHOUETTE = 0.10
@@ -51,6 +56,9 @@ def mock_settings(tmp_path):
     s.ENABLE_MODEL_PROMOTION = True
     s.ENABLE_MODEL_ROLLBACK = True
     s.GCS_KEY_FILE = "/tmp/fake-gcs-key.json"
+    # Vertex AI Model Registry
+    s.GCP_PROJECT_ID = ""
+    s.GCP_REGION = "us-central1"
     s.ensure_directories = Mock()
     return s
 

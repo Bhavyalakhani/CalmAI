@@ -37,6 +37,14 @@ class Settings:
     RETRAIN_ENTRY_THRESHOLD: int = 50
     RETRAIN_MAX_DAYS: int = 7
 
+    # data drift detection thresholds (dag 2)
+    # drift is checked when volume/time thresholds are NOT met
+    # retraining triggers if ANY drift signal exceeds its threshold
+    DRIFT_VOCAB_THRESHOLD: float = float(os.getenv("DRIFT_VOCAB_THRESHOLD", "0.65"))
+    DRIFT_EMBEDDING_THRESHOLD: float = float(os.getenv("DRIFT_EMBEDDING_THRESHOLD", "0.30"))
+    DRIFT_TOPIC_THRESHOLD: float = float(os.getenv("DRIFT_TOPIC_THRESHOLD", "0.25"))
+    ENABLE_DRIFT_DETECTION: bool = os.getenv("ENABLE_DRIFT_DETECTION", "true").lower() == "true"
+
     # model lifecycle — promotion gates
     MODEL_MAX_OUTLIER_RATIO: float = float(os.getenv("MODEL_MAX_OUTLIER_RATIO", "0.20"))
     MODEL_MIN_SILHOUETTE: float = float(os.getenv("MODEL_MIN_SILHOUETTE", "0.10"))
@@ -64,6 +72,12 @@ class Settings:
     # local dev: set GCS_KEY_FILE=./calm-ai-dvc-key.json in .env
     # docker: mounted read-only at /run/secrets/gcs-key.json via docker-compose
     GCS_KEY_FILE: str = os.getenv("GCS_KEY_FILE", "./calm-ai-bucket-key.json")
+
+    # Vertex AI Model Registry
+    # set GCP_PROJECT_ID to enable Vertex AI for model versioning
+    # requires google-cloud-aiplatform and GCP credentials (ADC or GCS_KEY_FILE)
+    GCP_PROJECT_ID: str = os.getenv("GCP_PROJECT_ID", "")
+    GCP_REGION: str = os.getenv("GCP_REGION", "us-central1")
 
     # model lifecycle — feature flags
     ENABLE_MODEL_SELECTION_GATE: bool = os.getenv("ENABLE_MODEL_SELECTION_GATE", "true").lower() == "true"

@@ -16,3 +16,4 @@ dvc-gs
 bertopic>=0.17.0
 hdbscan>=0.8.33
 mlflow>=3.0.0
+google-cloud-aiplatform>=1.38.0

@@ -434,15 +434,17 @@ def run():
             logger.info(f"  {model_type}: staging → latest promoted")
 
             tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
-            version = None
+            resource_name = None
             if tracker.registry_enabled:
-                tracker.start_run(run_name=f"{model_type}_promotion_local")
-                tracker.log_model_dir(str(latest_path), artifact_path="model")
-                version = tracker.register_model(model_name, artifact_path="model")
-                if version:
-                    tracker.promote_to_production(model_name, version)
-                    logger.info(f"  {model_type}: promoted v{version} to Production")
-                tracker.end_run()
+                # Vertex AI needs a GCS artifact URI — skip if no bucket configured
+                if settings.MODEL_REGISTRY_BUCKET:
+                    gcs_uri = f"gs://{settings.MODEL_REGISTRY_BUCKET}/{settings.MODEL_REGISTRY_PREFIX}/{model_type}/promoted/local_run"
+                    resource_name = tracker.register_model(model_name, artifact_uri=gcs_uri)
+                    if resource_name:
+                        tracker.promote_to_production(model_name, resource_name)
+                        logger.info(f"  {model_type}: promoted in Vertex AI: {resource_name}")
+                else:
+                    logger.info(f"  {model_type}: Vertex AI enabled but no GCS bucket — skipping registration")
 
             try:
                 mongo = MongoDBClient()
@@ -451,7 +453,7 @@ def run():
                     mongo.save_model_lifecycle_event({
                         "event_type": "promotion",
                         "model_name": model_name,
-                        "version": version,
+                        "resource_name": resource_name,
                         "model_path": str(latest_path),
                         "candidate_score": decision.get("candidate_score", 0),
                         "smoke_test": smoke,
@@ -461,7 +463,7 @@ def run():
             except Exception as e:
                 logger.warning(f"  failed to log promotion event: {e}")
 
-            promotion_results[model_type] = {"promoted": True, "version": version}
+            promotion_results[model_type] = {"promoted": True, "resource_name": resource_name}
 
         return {"decisions": decisions, "promoted": promotion_results}
 

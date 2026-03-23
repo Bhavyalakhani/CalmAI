@@ -139,6 +139,7 @@ def embed_entries_callable(**context):
         ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
         return
 
+    import pandas as pd
     from embedding.embedder import embed_incoming_journals
     embedded_df = embed_incoming_journals(journals)
 
@@ -250,8 +251,53 @@ def conditional_retrain_callable(**context):
                     should_retrain = True
                     retrain_reason = f"{days_since:.1f} days since last training (threshold: {threshold_days})"
 
+        # data drift detection — check when volume/time thresholds are NOT met
+        if not should_retrain and settings.ENABLE_DRIFT_DETECTION:
+            try:
+                from monitoring.drift_detector import DriftDetector
+                import pandas as pd
+
+                detector = DriftDetector(
+                    vocab_threshold=settings.DRIFT_VOCAB_THRESHOLD,
+                    embedding_threshold=settings.DRIFT_EMBEDDING_THRESHOLD,
+                    topic_threshold=settings.DRIFT_TOPIC_THRESHOLD,
+                )
+
+                # fetch recent incoming docs and a sample of training corpus for comparison
+                recent_docs = list(client.db["incoming_journals"].find(
+                    {"is_processed": True},
+                    {"content": 1, "_id": 0},
+                ).sort("created_at", -1).limit(200))
+                recent_texts = [d["content"] for d in recent_docs if d.get("content")]
+
+                training_docs = list(client.journals.find(
+                    {},
+                    {"content": 1, "_id": 0},
+                ).sort("entry_date", -1).limit(500))
+                training_texts = [d["content"] for d in training_docs if d.get("content")]
+
+                if len(recent_texts) >= 10 and len(training_texts) >= 10:
+                    drift_report = detector.run_drift_check(
+                        reference_docs=training_texts,
+                        current_docs=recent_texts,
+                    )
+                    logger.info(f"Drift check: {drift_report}")
+                    ti.xcom_push(key="drift_report", value=drift_report)
+
+                    if drift_report.get("drift_detected", False):
+                        should_retrain = True
+                        drift_signals = []
+                        for signal in ["vocabulary", "embedding", "topic"]:
+                            if drift_report.get(signal, {}).get("drifted", False):
+                                drift_signals.append(signal)
+                        retrain_reason = f"data drift detected: {', '.join(drift_signals)}"
+                else:
+                    logger.info(f"Drift check skipped — too few docs (recent={len(recent_texts)}, training={len(training_texts)})")
+            except Exception as e:
+                logger.warning(f"Drift detection failed (non-blocking): {e}")
+
         if not should_retrain:
-            logger.info(f"Retrain not needed — {new_entries} new entries, thresholds not met")
+            logger.info(f"Retrain not needed — {new_entries} new entries, thresholds not met, no drift")
             ti.xcom_push(key="retrain_triggered", value=False)
             ti.xcom_push(key="retrain_reason", value="thresholds not met")
             ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
@@ -269,7 +315,7 @@ def conditional_retrain_callable(**context):
 
         logger.info(f"Loaded {len(journal_df)} journals and {len(conversation_df)} conversations from MongoDB")
 
-        from topic_modeling.config import TopicModelConfig, get_staging_dir, promote_staging_to_latest, cleanup_staging
+        from topic_modeling.config import TopicModelConfig, get_models_dir, get_staging_dir, promote_staging_to_latest, cleanup_staging
         from topic_modeling.trainer import TopicModelTrainer
         from topic_modeling.validation import TopicModelValidator
         from topic_modeling.selection_policy import SelectionPolicy
@@ -281,7 +327,8 @@ def conditional_retrain_callable(**context):
 
         def _retrain_single_model(model_type, df, prepare_fn, **train_kwargs):
             """retrain a single model with full lifecycle:
-            train → holdout validate → bias gate → selection policy → smoke test.
+            train → holdout validate → compare with existing latest/ model →
+            bias gate → selection policy → smoke test → promote or reject.
             trains to staging/ dir — only promoted models get copied to latest/."""
             import numpy as np
             from pathlib import Path
@@ -306,8 +353,9 @@ def conditional_retrain_callable(**context):
             validation_report = validator.validate(result)
             validator.save_report(validation_report)
 
-            # 3. holdout validation + bias gate
+            # 3. holdout validation + bias gate + active model comparison
             holdout_report = None
+            active_report = None
             bias_result = None
             try:
                 from bertopic import BERTopic
@@ -327,10 +375,28 @@ def conditional_retrain_callable(**context):
                     holdout_df = df.iloc[holdout_indices].reset_index(drop=True)
                     holdout_docs = [docs[i] for i in holdout_indices]
 
-                # holdout validation
+                # holdout validation on candidate
                 holdout_report = validator.validate_holdout(model, holdout_docs)
                 holdout_report["model_type"] = model_type
                 validator.save_report(holdout_report, f"{model_type}_retrain_holdout.json")
+
+                # holdout validation on existing latest/ model (for comparison)
+                latest_dir = get_models_dir(model_type)
+                latest_model_path = latest_dir / "model"
+                if latest_model_path.exists():
+                    try:
+                        active_model = BERTopic.load(str(latest_model_path))
+                        active_report = validator.validate_holdout(active_model, holdout_docs)
+                        active_report["model_type"] = f"{model_type}_active"
+                        validator.save_report(active_report, f"{model_type}_active_holdout.json")
+                        logger.info(
+                            f"{model_type}: active model holdout composite_score="
+                            f"{active_report.get('metrics', {}).get('composite_score', 'N/A')}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"{model_type}: could not validate active model (non-fatal): {e}")
+                else:
+                    logger.info(f"{model_type}: no existing latest/ model — first promotion")
 
                 # bias gate
                 from bias_detection.holdout_bias_gate import HoldoutBiasGate
@@ -350,11 +416,11 @@ def conditional_retrain_callable(**context):
             except Exception as e:
                 logger.warning(f"{model_type}: holdout/bias analysis failed (non-fatal): {e}")
 
-            # 4. selection policy (compare against existing — None means promotes freely)
+            # 4. selection policy — compare candidate vs existing latest/ model
             candidate = holdout_report if holdout_report else validation_report
             decision = policy.evaluate(
                 candidate_report=candidate,
-                active_report=None,
+                active_report=active_report,
                 bias_result=bias_result,
             )
 
@@ -370,19 +436,32 @@ def conditional_retrain_callable(**context):
                     # copy staging → latest (this is the model inference will use)
                     promote_staging_to_latest(model_type)
                     logger.info(f"{model_type}: promoted after retrain — staging → latest")
+
+                    # 6. post-deployment verification on the promoted model
+                    try:
+                        from monitoring.deployment_verifier import verify_deployed_model
+                        latest_dir = get_models_dir(model_type) / "model"
+                        verification = verify_deployed_model(
+                            model_type=model_type,
+                            model_dir=str(latest_dir),
+                        )
+                        if not verification.get("passed", False):
+                            logger.warning(f"{model_type}: deployment verification FAILED — {verification['checks']}")
+                        else:
+                            logger.info(f"{model_type}: deployment verification passed")
+                    except Exception as e:
+                        logger.warning(f"{model_type}: deployment verification error (non-blocking): {e}")
                 else:
                     logger.warning(f"{model_type}: smoke test failed — {smoke}")
 
-            if not promoted:
-                # rejected: clean up staging, keep existing latest/ untouched
-                cleanup_staging(model_type)
-
-            return {
+            # build result before cleanup (model_path still exists on disk)
+            retrain_result = {
                 "num_topics": result["num_topics"],
                 "num_documents": result["num_documents"],
                 "outlier_ratio": result["outlier_ratio"],
                 "validation_status": validation_report.get("status", "unknown"),
                 "holdout_status": holdout_report.get("status", "unknown") if holdout_report else "skipped",
+                "active_composite_score": active_report.get("metrics", {}).get("composite_score", 0) if active_report else None,
                 "bias_passed": bias_result.get("passed") if bias_result else None,
                 "bias_max_disparity": bias_result.get("max_disparity_delta") if bias_result else None,
                 "composite_score": (holdout_report or validation_report).get("metrics", {}).get("composite_score", 0),
@@ -390,6 +469,14 @@ def conditional_retrain_callable(**context):
                 "promoted": promoted,
                 "model_path": str(model_path),
             }
+
+            # 6. cleanup staging AFTER result is built (GCS upload uses model_path later)
+            # for promoted models, staging was already copied to latest/
+            # for rejected models, we keep staging alive until GCS upload completes
+            if promoted:
+                cleanup_staging(model_type)
+
+            return retrain_result
 
         # retrain journal model
         if len(journal_df) >= 20:
@@ -442,7 +529,7 @@ def conditional_retrain_callable(**context):
             "results": retrain_results,
         })
 
-        # upload promoted models to GCS with versioning
+        # upload all models to GCS (promoted + rejected) then clean up rejected staging
         from pathlib import Path
         import config as _cfg
         _settings = _cfg.settings
@@ -457,6 +544,7 @@ def conditional_retrain_callable(**context):
                 prefix = _settings.MODEL_REGISTRY_PREFIX
                 version_tag = datetime.now(timezone.utc).strftime("v_%Y%m%d_%H%M%S")
 
+                gcs_uris = {}  # model_type → GCS URI for Vertex AI registration
                 for model_type, res in retrain_results.items():
                     if "error" in res:
                         continue
@@ -464,21 +552,53 @@ def conditional_retrain_callable(**context):
                     if not model_dir.exists():
                         continue
 
-                    # promoted → promoted/<version>/ only
-                    # rejected → rejected/<version>/ (kept for audit)
                     status = "promoted" if res.get("promoted", False) else "rejected"
+                    gcs_prefix = f"{prefix}/bertopic_{model_type}/{status}/{version_tag}"
                     files = [f for f in model_dir.rglob("*") if f.is_file()] if model_dir.is_dir() else [model_dir]
                     for f in files:
                         rel = f.relative_to(model_dir) if model_dir.is_dir() else f.name
-                        # versioned copy under promoted/ or rejected/ (no latest/ on GCS)
-                        bucket.blob(f"{prefix}/bertopic_{model_type}/{status}/{version_tag}/{rel}").upload_from_filename(str(f))
+                        bucket.blob(f"{gcs_prefix}/{rel}").upload_from_filename(str(f))
                     logger.info(f"GCS upload: bertopic_{model_type} → {status}/{version_tag}/")
+
+                    if res.get("promoted", False):
+                        gcs_uris[model_type] = f"gs://{bucket_name}/{gcs_prefix}"
+
+                # register promoted models with Vertex AI Model Registry
+                if gcs_uris:
+                    try:
+                        from topic_modeling.experiment_tracker import ExperimentTracker
+                        for model_type, gcs_uri in gcs_uris.items():
+                            tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
+                            if not tracker.registry_enabled:
+                                logger.info(f"Vertex AI not enabled — skipping registration for bertopic_{model_type}")
+                                continue
+                            model_name = f"bertopic_{model_type}"
+                            resource_name = tracker.register_model(
+                                model_name,
+                                artifact_uri=gcs_uri,
+                                labels={"retrain_trigger": retrain_reason[:63]},
+                            )
+                            if resource_name:
+                                tracker.promote_to_production(model_name, resource_name)
+                                logger.info(f"Registered + promoted {model_name} in Vertex AI: {resource_name}")
+                            else:
+                                logger.warning(f"Vertex AI registration failed for {model_name}")
+                    except Exception as e:
+                        logger.warning(f"Vertex AI registration after retrain failed (non-blocking): {e}")
+
             except Exception as e:
                 logger.warning(f"GCS upload after retrain failed (non-blocking): {e}")
         elif not bucket_name:
             logger.info("MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
         elif not key_file.exists():
             logger.info(f"GCS key file not found: {key_file} — skipping GCS upload")
+
+        # clean up rejected staging dirs now that GCS upload is done
+        for model_type, res in retrain_results.items():
+            if "error" in res:
+                continue
+            if not res.get("promoted", False):
+                cleanup_staging(model_type)
 
         ti.xcom_push(key="retrain_triggered", value=True)
         ti.xcom_push(key="retrain_reason", value=retrain_reason)

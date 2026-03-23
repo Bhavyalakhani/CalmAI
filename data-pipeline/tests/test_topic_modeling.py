@@ -112,9 +112,10 @@ class TestTopicModelConfig:
 # experiment tracker tests
 
 class TestExperimentTracker:
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_setup_tracking(self, mock_set_exp, mock_set_uri):
+    def test_setup_tracking(self, mock_set_exp, mock_set_uri, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -123,11 +124,12 @@ class TestExperimentTracker:
             assert tracker.experiment_name == "test_experiment"
             mock_set_exp.assert_called_once_with("test_experiment")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.start_run")
     @patch("mlflow.log_param")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_start_run(self, mock_set_exp, mock_set_uri, mock_log_param, mock_start):
+    def test_start_run(self, mock_set_exp, mock_set_uri, mock_log_param, mock_start, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -141,10 +143,11 @@ class TestExperimentTracker:
             assert run_id == "test-run-123"
             mock_log_param.assert_called_once_with("param1", "value1")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.log_metric")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_log_metrics(self, mock_set_exp, mock_set_uri, mock_log_metric):
+    def test_log_metrics(self, mock_set_exp, mock_set_uri, mock_log_metric, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -153,10 +156,11 @@ class TestExperimentTracker:
             tracker.log_metrics({"score": 0.85, "loss": 0.15})
             assert mock_log_metric.call_count == 2
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.end_run")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_end_run(self, mock_set_exp, mock_set_uri, mock_end):
+    def test_end_run(self, mock_set_exp, mock_set_uri, mock_end, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -167,10 +171,11 @@ class TestExperimentTracker:
             mock_end.assert_called_once()
             assert tracker.run_id is None
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.set_tag")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_tag_best_model(self, mock_set_exp, mock_set_uri, mock_set_tag):
+    def test_tag_best_model(self, mock_set_exp, mock_set_uri, mock_set_tag, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -180,11 +185,12 @@ class TestExperimentTracker:
             tracker.tag_best_model()
             mock_set_tag.assert_called_with("model_status", "production")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.get_experiment_by_name")
     @patch("mlflow.search_runs")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_get_best_run(self, mock_set_exp, mock_set_uri, mock_search, mock_get_exp):
+    def test_get_best_run(self, mock_set_exp, mock_set_uri, mock_search, mock_get_exp, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -204,10 +210,11 @@ class TestExperimentTracker:
             assert best is not None
             assert best["run_id"] == "run-best"
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.get_experiment_by_name")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_get_best_run_no_experiment(self, mock_set_exp, mock_set_uri, mock_get_exp):
+    def test_get_best_run_no_experiment(self, mock_set_exp, mock_set_uri, mock_get_exp, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 

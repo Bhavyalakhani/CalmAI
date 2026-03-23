@@ -243,9 +243,9 @@ The `GET /journals` and `GET /dashboard/mood-trend/{id}` endpoints sanitize mood
 
 ## Testing
 
-178 tests across 11 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
+173 tests across 10 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
 
 ```bash
-pytest tests/ -v            # 178 tests
+pytest tests/ -v            # 173 tests
 pytest tests/ -v --cov      # with coverage
 ```

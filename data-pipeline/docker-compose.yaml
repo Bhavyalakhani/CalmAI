@@ -79,13 +79,22 @@ x-airflow-common:
     MODEL_MIN_TOPIC_DIVERSITY: ${MODEL_MIN_TOPIC_DIVERSITY:-0.50}
     MODEL_MAX_BIAS_DISPARITY: ${MODEL_MAX_BIAS_DISPARITY:-0.10}
     MODEL_PROMOTION_MIN_SCORE_DELTA: ${MODEL_PROMOTION_MIN_SCORE_DELTA:-0.01}
-    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://localhost:5000}
+    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-sqlite:////opt/airflow/mlruns/mlflow.db}
     MLFLOW_ARTIFACT_ROOT: ${MLFLOW_ARTIFACT_ROOT:-/opt/airflow/mlruns/artifacts}
     ENABLE_MODEL_SELECTION_GATE: ${ENABLE_MODEL_SELECTION_GATE:-true}
     ENABLE_MODEL_PROMOTION: ${ENABLE_MODEL_PROMOTION:-true}
     ENABLE_MODEL_ROLLBACK: ${ENABLE_MODEL_ROLLBACK:-true}
-    # GCS service account key file path (mounted from host via GCS_KEY_FILE in .env)
+    # GCS service account key — always use the container-side mount path
     GCS_KEY_FILE: /run/secrets/gcs-key.json
+    # Vertex AI Model Registry — set GCP_PROJECT_ID to enable
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+    GCP_REGION: ${GCP_REGION:-us-central1}
+    GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcs-key.json
+    # Data drift detection
+    ENABLE_DRIFT_DETECTION: ${ENABLE_DRIFT_DETECTION:-true}
+    DRIFT_VOCAB_THRESHOLD: ${DRIFT_VOCAB_THRESHOLD:-0.65}
+    DRIFT_EMBEDDING_THRESHOLD: ${DRIFT_EMBEDDING_THRESHOLD:-0.30}
+    DRIFT_TOPIC_THRESHOLD: ${DRIFT_TOPIC_THRESHOLD:-0.25}
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server

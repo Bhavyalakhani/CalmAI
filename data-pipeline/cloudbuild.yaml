@@ -1,0 +1,39 @@
+# Cloud Build CI/CD — builds and pushes the CalmAI Airflow Docker image
+# to Google Artifact Registry for deployment on GCE or Cloud Run.
+#
+# Usage:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=calmai-docker .
+
+steps:
+  # build the airflow docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
+      - '.'
+
+  # push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
+
+substitutions:
+  _REGION: us-central1
+  _REPO: calmai-docker
+
+options:
+  logging: CLOUD_LOGGING_ONLY

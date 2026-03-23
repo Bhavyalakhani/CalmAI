@@ -5,6 +5,7 @@ import logging
 import hashlib
 import math
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from bson import ObjectId
@@ -95,7 +96,7 @@ def _classify_themes(text: str) -> list[str]:
     return ["unclassified"]
 
 
-async def _refresh_patient_analytics(patient_id: str, db: Database, deleted_journal_id: str | None = None):
+async def _refresh_patient_analytics(patient_id: str, db: Database, deleted_journal_id: Optional[str] = None):
     """lightweight analytics refresh from the journals collection.
     recomputes total_entries, avg_word_count, entry_frequency, date_range
     and cleans up representative_entries. runs instantly in the backend
@@ -183,7 +184,7 @@ async def _refresh_patient_analytics(patient_id: str, db: Database, deleted_jour
         logger.warning(f"Could not refresh analytics for {patient_id}: {e}")
 
 
-async def _doc_to_journal(doc: dict, db: Database | None = None) -> JournalEntryResponse:
+async def _doc_to_journal(doc: dict, db: Optional[Database] = None) -> JournalEntryResponse:
     """convert a mongodb journal document to response model.
     if themes are missing and BERTopic classifies them, persist back to db."""
     journal_id = doc.get("journal_id", str(doc.get("_id", "")))

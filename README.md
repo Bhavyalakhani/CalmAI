@@ -12,6 +12,7 @@ A B2B SaaS platform for licensed therapists - helps mental health professionals 
 - [Tech Stack](#tech-stack)
 - [Testing](#testing)
 - [CI/CD](#cicd)
+- [Deployment](#deployment)
 - [Contributing](#contributing)
 
 ## Overview
@@ -71,7 +72,7 @@ Analytics displayed on:
                             │                         │
                      ┌──────▼───────┐          ┌──────▼──────┐
                      │   BERTopic   │          │    Data     │
-                     │  + MLflow    │          │  Pipeline   │
+                     │  + Vertex AI │          │  Pipeline   │
                      │  + Gemini    │          │  (Airflow)  │
                      └──────────────┘          └─────────────┘
 ```
@@ -86,7 +87,7 @@ CalmAI/
 │       └── ci.yml                  # CI pipeline (data-pipeline + backend + frontend + Docker)
 │
 ├── data-pipeline/          # Data acquisition, processing, and storage
-│   ├── dags/               #   2 Airflow DAGs (batch + incoming journals)
+│   ├── dags/               #   2 Airflow DAGs (batch 30 tasks + incoming journals 11 tasks)
 │   ├── src/                #   Pipeline source code (10 modules)
 │   │   ├── acquisition/    #     Data download + Gemini journal generation
 │   │   ├── preprocessing/  #     Domain-specific text cleaning
@@ -95,9 +96,9 @@ CalmAI/
 │   │   ├── embedding/      #     Sentence-transformer embedding generation
 │   │   ├── storage/        #     MongoDB client (CRUD, indexes, batch inserts)
 │   │   ├── analytics/      #     Per-patient analytics computation
-│   │   ├── topic_modeling/  #    BERTopic training, inference, validation, MLflow tracking
+│   │   ├── topic_modeling/  #    BERTopic training, inference, validation, MLflow tracking, Vertex AI registry
 │   │   └── alerts/         #     Email notifications for DAG completion
-│   ├── tests/              #   367 pytest tests across 19 files
+│   ├── tests/              #   364 pytest tests across 18 files
 │   ├── models/             #   BERTopic model artifacts (safetensors)
 │   ├── mlruns/             #   MLflow experiment tracking (local)
 │   ├── configs/            #   Configuration and patient profiles
@@ -241,8 +242,9 @@ The data pipeline handles the complete data lifecycle including model training:
 | **Bias Detection** | BERTopic-based topic/severity analysis with visualizations and underrepresentation flagging |
 | **Patient Analytics** | Per-patient topic distribution, frequency, trends, representative entries |
 | **Storage** | MongoDB Atlas with unified `rag_vectors` collection for vector search |
-| **Orchestration** | 2 Airflow DAGs — batch pipeline (23 tasks) + incoming journal micro-batch (11 tasks, every 12 hours) |
-| **Experiment Tracking** | MLflow local file-backed — logs hyperparameters, metrics, model artifacts per training run |
+| **Orchestration** | 2 Airflow DAGs — batch pipeline (30 tasks) + incoming journal micro-batch (11 tasks, every 12 hours) |
+| **Experiment Tracking** | MLflow local SQLite — logs hyperparameters, metrics, model artifacts per training run |
+| **Model Registry** | Vertex AI Model Registry — cloud-native model versioning (when `GCP_PROJECT_ID` is set) |
 | **Model Storage** | GCS bucket with versioned uploads — promoted models at `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`, rejected at `rejected/v_YYYYMMDD_HHMMSS/` |
 | **Versioning** | DVC with GCS remote for full artifact reproducibility |
 
@@ -261,7 +263,7 @@ Three independent BERTopic models for unsupervised topic discovery and severity 
 | **Tuning** | Grid search over UMAP/HDBSCAN hyperparameters with composite scoring (includes `SeverityHyperparameterSpace`) |
 | **Validation** | Quality metrics — topic diversity, outlier ratio, label uniqueness, Gini coefficient |
 | **Model Lifecycle** | Train → Holdout Validation → Bias Gate → Selection Policy → Smoke Test → GCS Upload |
-| **Registry** | MLflow experiments + safetensors model artifacts at `models/bertopic_{type}/latest/` + GCS versioned storage |
+| **Registry** | MLflow experiments + Vertex AI Model Registry + safetensors model artifacts at `models/bertopic_{type}/latest/` + GCS versioned storage |
 | **Inference** | `TopicModelInference` loads saved models for real-time classification (backend + analytics + severity) |
 
 See [data-pipeline/src/topic_modeling/README.md](data-pipeline/src/topic_modeling/README.md) for detailed documentation.
@@ -315,35 +317,38 @@ Next.js 16 application with 14 routes, dark theme, and 199 Vitest tests.
 | Layer | Technologies |
 |---|---|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Recharts, Lucide Icons, react-markdown |
-| Frontend Testing | Vitest 4, React Testing Library, jsdom (199 tests across 18 files) |
+| Frontend Testing | Vitest 4, React Testing Library, jsdom (200 tests across 18 files) |
 | Backend | FastAPI, Motor (async MongoDB), python-jose (JWT), passlib (bcrypt), pydantic-settings |
-| Backend Testing | pytest, pytest-asyncio, httpx (173 tests across 11 files) |
+| Backend Testing | pytest, pytest-asyncio, httpx (173 tests across 10 files) |
 | RAG | LangChain (langchain-google-genai, langchain-huggingface, langchain-mongodb), sentence-transformers |
 | Data Pipeline | Python, Pandas, NumPy, Apache Airflow, Docker Compose |
 | Topic Modeling | BERTopic (>=0.17.0), Gemini LLM labeling, UMAP, HDBSCAN |
-| Experiment Tracking | MLflow (>=3.0.0), local file-backed |
+| Experiment Tracking | MLflow (>=3.0.0), local SQLite |
+| Model Registry | Vertex AI Model Registry (google-cloud-aiplatform >=1.38.0) |
+| Model Monitoring | Data drift detection (vocabulary, embedding, topic distribution), post-deployment verification |
 | ML/Embedding | Sentence-Transformers (`all-MiniLM-L6-v2`, 384 dims) |
 | LLM | Google Gemini API (`gemini-2.5-flash`) |
 | Storage | MongoDB Atlas (vector search + raw collections + staging + analytics) |
 | Model Storage | Google Cloud Storage (versioned promoted/rejected uploads) |
-| Pipeline Testing | pytest (367 tests across 19 files, mocked external services) |
+| Pipeline Testing | pytest (409 tests across 20 files, mocked external services) |
 | Data Versioning | DVC + Google Cloud Storage |
-| CI/CD | GitHub Actions (lint, test, build, Docker validation) |
+| CI/CD | GitHub Actions (lint, test, build, Docker validation, auto-deploy) + Cloud Build (Artifact Registry) |
+| Deployment | Cloud Run (frontend/backend), GCE VM (Airflow), Vertex AI Custom Training (GPU) |
 
 ## Testing
 
-739 tests across all three components:
+782 tests across all three components:
 
 ```bash
-# data pipeline (367 tests across 19 files)
+# data pipeline (409 tests across 20 files)
 cd data-pipeline
 pytest tests/ -v --cov
 
-# backend (173 tests across 11 files)
+# backend (173 tests across 10 files)
 cd backend
 pytest tests/ -v --cov
 
-# frontend (199 tests across 18 files)
+# frontend (200 tests across 18 files)
 cd frontend
 npm test
 npm run test:coverage
@@ -357,11 +362,79 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull
 
 | Job | Description |
 |---|---|
-| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 367 pytest tests |
-| **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests |
-| **Frontend Tests & Build** | Node 20, lint, 199 Vitest tests, production build |
+| **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 409 pytest tests |
+| **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests (10 files) |
+| **Frontend Tests & Build** | Node 20, lint, 200 Vitest tests, production build |
 | **Docker Build** | Validates the Airflow Docker image builds successfully |
 | **CI Pass** | Gates the pipeline — fails if any job fails |
+
+**CD** — `.github/workflows/deploy.yml` auto-deploys on push to `main` (after CI passes):
+
+| Job | Description |
+|---|---|
+| **Wait for CI** | Blocks until the CI workflow passes |
+| **Build & Push** | Authenticates to GCP, builds Docker image, pushes to Google Artifact Registry |
+| **Verify** | Confirms image exists in Artifact Registry, posts deployment summary |
+
+Requires GitHub secrets: `GCP_PROJECT_ID`, `GCP_SA_KEY` (service account JSON).
+
+## Deployment
+
+### Prerequisites
+
+- [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and authenticated (`gcloud auth login`)
+- A GCP project with billing enabled
+- `.env` file in `data-pipeline/` with `GCP_PROJECT_ID` set
+
+### Quick Deploy (Data Pipeline)
+
+```bash
+cd data-pipeline
+
+# 1. configure
+cp .env.example .env
+# set GCP_PROJECT_ID, MONGODB_URI, GEMINI_API_KEY, and other required vars
+
+# 2. one-script deployment — enables APIs, creates Artifact Registry repo,
+#    creates GCS bucket, builds Docker image, and pushes to Artifact Registry
+chmod +x deploy.sh
+./deploy.sh
+```
+
+`deploy.sh` does the following:
+1. Enables GCP APIs (Artifact Registry, Cloud Build, Vertex AI, Cloud Storage)
+2. Creates an Artifact Registry Docker repo (`calmai-docker`)
+3. Configures Docker auth for Artifact Registry
+4. Creates a GCS bucket for model artifacts (if `MODEL_REGISTRY_BUCKET` is set)
+5. Submits Cloud Build to build and push the Airflow Docker image
+
+### Post-Deploy Steps
+
+1. **Airflow VM**: Set up a GCE VM (`e2-standard-4`) and pull the pushed image:
+   ```bash
+   docker pull ${REGION}-docker.pkg.dev/${PROJECT_ID}/calmai-docker/calmai-airflow:latest
+   ```
+2. **Update `docker-compose.yaml`**: Point to the pushed image instead of local build
+3. **Enable Vertex AI**: Set `GCP_PROJECT_ID` in the VM's `.env` to enable model registry
+4. **GPU Training** (optional): Use Vertex AI Custom Training Jobs with L4 spot GPUs
+
+### Deployment Architecture
+
+| Component | Service | Estimated Cost |
+|---|---|---|
+| Airflow (data pipeline) | GCE VM `e2-standard-4` | ~$100/mo |
+| GPU training jobs | Vertex AI Custom Training (L4 spot) | ~$25/mo on-demand |
+| Frontend | Cloud Run (static) | ~$0 (free tier) |
+| Backend (FastAPI) | Cloud Run | ~$10/mo |
+| MongoDB | MongoDB Atlas (free tier → M10) | $0–$57/mo |
+| Model artifacts | GCS bucket | ~$1/mo |
+
+### Deployment Files
+
+| File | Description |
+|---|---|
+| `data-pipeline/cloudbuild.yaml` | Cloud Build config — builds + pushes Docker image to Artifact Registry |
+| `data-pipeline/deploy.sh` | One-script GCP setup — enable APIs, create repos/buckets, submit build |
 
 ## Contributing
 
