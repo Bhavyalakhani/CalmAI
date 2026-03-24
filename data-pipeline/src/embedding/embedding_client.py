@@ -23,7 +23,7 @@ class EmbeddingClient:
     endpoint via HTTP POST. otherwise, loads a local SentenceTransformer.
     """
 
-    def __init__(self, model_name: Optional[str] = None, batch_size: int = 64):
+    def __init__(self, model_name: Optional[str] = None, batch_size: int = 16):
         self.settings = config.settings
         # use getattr with defaults so mocked settings (MagicMock) don't accidentally
         # enable the remote endpoint — MagicMock attrs are truthy
