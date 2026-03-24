@@ -71,10 +71,14 @@ def verify_deployed_model(
         logger.error(f"Deployment verification FAILED for {model_type}: model load error — {e}")
         return report
 
-    # check 2: inference produces results
+    # check 2: inference produces results (pre-embed via EmbeddingClient)
     try:
+        from embedding.embedding_client import EmbeddingClient
+        client = EmbeddingClient()
+        test_embeddings = client.embed(test_docs, show_progress=False)
+
         t0 = time.time()
-        topics, probs = model.transform(test_docs)
+        topics, probs = model.transform(test_docs, test_embeddings)
         latency_ms = (time.time() - t0) * 1000
         topics = list(topics)
 

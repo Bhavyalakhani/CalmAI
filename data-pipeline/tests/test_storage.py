@@ -12,6 +12,7 @@ import numpy as np
 from pymongo.errors import BulkWriteError
 
 from storage.mongodb_client import MongoDBClient, BATCH_SIZE, build_parser
+from conftest import FAKE_DIM
 
 
 # helpers
@@ -176,7 +177,7 @@ class TestInsertJournals:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["some content"],
-            "embedding": [[0.1] * 384],
+            "embedding": [[0.1] * FAKE_DIM],
             "embedding_text": ["text"],
         })
         df["entry_date"] = pd.NaT

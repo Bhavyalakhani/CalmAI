@@ -1,3 +1,4 @@
+from .embedding_client import EmbeddingClient
 from .embedder import (
     EmbeddingService,
     embed_conversations,
@@ -7,6 +8,7 @@ from .embedder import (
 )
 
 __all__ = [
+    "EmbeddingClient",
     "EmbeddingService",
     "embed_conversations",
     "embed_journals",

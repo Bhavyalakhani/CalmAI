@@ -202,16 +202,26 @@ class TopicModelTrainer:
         return RunnableLambda(_invoke)
 
     def _build_bertopic(self):
-        """assemble the full bertopic model from components"""
+        """assemble the full bertopic model from components.
+
+        when USE_EMBEDDING_SERVICE is true, embedding_model is set to None
+        because all embeddings are pre-computed via the remote endpoint.
+        BERTopic will skip its internal embedding step when embeddings are
+        passed to fit_transform() / transform().
+        """
         from bertopic import BERTopic
-        from sentence_transformers import SentenceTransformer
 
         umap_model = self._build_umap()
         hdbscan_model = self._build_hdbscan()
         vectorizer_model = self._build_vectorizer()
         representation_models = self._build_representation_models()
 
-        embedding_model = SentenceTransformer(self.config.embedding_model_name)
+        settings = config.settings
+        if settings.USE_EMBEDDING_SERVICE:
+            embedding_model = None
+        else:
+            from sentence_transformers import SentenceTransformer
+            embedding_model = SentenceTransformer(self.config.embedding_model_name)
 
         return BERTopic(
             embedding_model=embedding_model,
@@ -228,12 +238,16 @@ class TopicModelTrainer:
     # embedding helpers
 
     def _pre_calculate_embeddings(self, docs: List[str]) -> np.ndarray:
-        """pre-calculate embeddings for all documents (bertopic best practice)"""
-        from sentence_transformers import SentenceTransformer
+        """pre-calculate embeddings for all documents (bertopic best practice).
+        routes through EmbeddingClient — local model or remote endpoint."""
+        from embedding.embedding_client import EmbeddingClient
 
         logger.info(f"Pre-calculating embeddings for {len(docs)} documents...")
-        model = SentenceTransformer(self.config.embedding_model_name)
-        embeddings = model.encode(docs, show_progress_bar=True, batch_size=64)
+        client = EmbeddingClient(
+            model_name=self.config.embedding_model_name,
+            batch_size=64,
+        )
+        embeddings = client.embed(docs)
         logger.info(f"Embeddings shape: {embeddings.shape}")
         return embeddings
 

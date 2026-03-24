@@ -159,7 +159,7 @@ class MongoDBClient:
                         {
                             "type": "vector",
                             "path": "embedding",
-                            "numDimensions": 384,
+                            "numDimensions": self.settings.EMBEDDING_DIM,
                             "similarity": "cosine",
                         },
                         {

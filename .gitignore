@@ -219,6 +219,8 @@ __marimo__/
 !.dvc
 !.dvcignore
 !.gitignore
+!.gitattributes
+!.dockerignore
 !.github
 
 # DVC cache
@@ -248,3 +250,4 @@ data-pipeline/reports/model/
 
 # agent instructions
 AGENTS.md
+CLAUDE.md

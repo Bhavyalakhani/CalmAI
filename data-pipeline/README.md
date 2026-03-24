@@ -32,7 +32,7 @@ CalmAI is a **B2B SaaS platform for licensed therapists** - not a patient-facing
 2. **Preprocesses** text with domain-specific rules that preserve clinical language (no stopword removal, no lowercasing)
 3. **Validates** schema integrity with expectation-based checks and a validation gate that halts the pipeline on failure
 4. **Detects bias** across topics, severity levels, themes, and temporal patterns with visualizations
-5. **Embeds** all text using `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions) (Temporary for dev, will be upgraded later)
+5. **Embeds** all text via a unified `EmbeddingClient` — `all-MiniLM-L6-v2` (384 dims) locally or Qwen 8B (4096 dims) via a remote Vertex AI endpoint in production
 6. **Stores** everything in MongoDB Atlas with a unified `rag_vectors` collection for vector search
 
 All clinical judgment stays with human therapists - the system surfaces information but never makes diagnoses or treatment recommendations.
@@ -91,8 +91,8 @@ External Services:
 | Model Registry | Vertex AI Model Registry (google-cloud-aiplatform) — cloud-native model versioning |
 | Model Lifecycle | Holdout validation, selection gates, bias gates, promotion, rollback |
 | Storage | MongoDB Atlas (unified vector store) |
-| LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
-| Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
+| LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation + topic labeling) |
+| Embedding | `EmbeddingClient` — local `all-MiniLM-L6-v2` (384 dims, dev) or remote `jainam02/qwen3-8b-mh-st3-merged` (4096 dims, prod via Vertex AI L4 GPU) |
 | Model Storage | Google Cloud Storage (versioned promoted/rejected uploads via `calm-ai-bucket-key.json`) |
 | Data Versioning | DVC + Google Cloud Storage |
 | Testing | pytest (409 tests, 20 test files) |
@@ -175,7 +175,7 @@ SMTP_MAIL_FROM=your-email@gmail.com
    - **Index name**: `vector_index`
    - **Collection**: `rag_vectors`
    - **Field**: `embedding`
-   - **Dimensions**: 384
+   - **Dimensions**: 384 (dev) or 4096 (prod with Qwen)
    - **Similarity**: cosine
    - **Filter fields**: `patient_id`, `doc_type`
 
@@ -321,7 +321,8 @@ data-pipeline/
 │   │   └── severity.py              # BERTopic severity singleton wrapper (classify_severity)
 │   │
 │   ├── embedding/
-│   │   └── embedder.py              # Sentence-transformer embedding generation
+│   │   ├── embedding_client.py      # Unified EmbeddingClient (local SentenceTransformer or remote Vertex AI endpoint)
+│   │   └── embedder.py              # EmbeddingService — batch embedding for conversations, journals, incoming
 │   │
 │   ├── storage/
 │   │   └── mongodb_client.py        # MongoDB operations (CRUD, indexes, batch inserts)
@@ -391,6 +392,11 @@ data-pipeline/
 │   ├── schema/                      # Schema validation JSON reports
 │   └── validation/                  # Reserved for future validation reports
 │
+├── gpu/
+│   └── embedding_server/
+│       ├── Dockerfile               # GPU embedding server (PyTorch + CUDA + SentenceTransformer)
+│       └── server.py                # FastAPI REST API (/embed, /health, /info)
+│
 ├── docker-compose.yaml              # Full Airflow cluster definition
 ├── Dockerfile                       # Custom Airflow image
 ├── cloudbuild.yaml                  # Cloud Build CI/CD config (Artifact Registry)
@@ -415,7 +421,8 @@ data-pipeline/
 | `conversation_bias.py` | Uses `TopicModelInference(model_type="conversations")` (model required). Classifies conversations into topics and 4 severity levels via BERTopic severity model. Flags underrepresented topics (<3%). Analyzes response length by topic. Generates visualizations. |
 | `journal_bias.py` | Uses `TopicModelInference(model_type="journals")` (model required). Classifies journals into topics. Analyzes temporal patterns (entries by day/month), patient distribution, and sparse patients (<10 entries). Generates visualizations. |
 | `severity.py` | BERTopic severity singleton wrapper. Lazy-loads `TopicModelInference(model_type="severity")` once, exposes `classify_severity()`, `classify_severity_batch()`, `classify_severity_series()`. Returns `"unknown"` when model is unavailable. Used by `mongodb_client`, `conversation_bias`, and `bias_analysis`. |
-| `embedder.py` | Loads `sentence-transformers/all-MiniLM-L6-v2`, generates 384-dim embeddings in batches of 64. Separate functions for conversations, journals, and incoming journals. |
+| `embedding_client.py` | Unified `EmbeddingClient` — when `USE_EMBEDDING_SERVICE=true`, sends texts to a remote Vertex AI endpoint via HTTP POST; otherwise loads a local SentenceTransformer. Batched (64 texts), pre-allocated numpy output. |
+| `embedder.py` | `EmbeddingService` — uses `EmbeddingClient` to generate embeddings in batches. Separate functions for conversations, journals, and incoming journals. |
 | `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Logs pipeline runs to `pipeline_metadata`. |
 | `patient_analytics.py` | Per-patient topic classification using `TopicModelInference(model_type="journals")`. Returns "unclassified" when model unavailable. Computes topic distribution, topics over time, representative entries, and frequency analytics. |
 | `topic_modeling/` | BERTopic topic modeling module (9 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification. `TopicModelValidator` checks quality metrics and holdout validation. `SelectionPolicy` enforces hard gates + weighted scoring for promotion. `ModelRollback` + `smoke_test_model` handle post-promotion verification and automatic rollback. `ExperimentTracker` wraps MLflow for experiment tracking and Vertex AI for model registry. `TopicBiasAnalyzer` detects bias using BERTopic topics. Models saved locally to `models/bertopic_{type}/latest/model` (safetensors), uploaded to GCS, and registered in Vertex AI Model Registry. Full lifecycle: train → holdout validation (80/20 split) → bias gate → selection policy → smoke test → GCS upload → Vertex AI registration. |
@@ -429,7 +436,7 @@ data-pipeline/
 
 ### DAG 1 - Batch Pipeline (`calm_ai_data_pipeline`)
 
-**Trigger**: Manual | **Mode**: Clear + Replace (idempotent) | **Tasks**: 23
+**Trigger**: Manual | **Mode**: Clear + Replace (idempotent) | **Tasks**: 30
 
 ```
 start
@@ -455,6 +462,16 @@ start
                         bias_conversations  bias_journals
                                └────────┬────────┘
                                    bias_complete
+                                        ↓
+                              validate_candidates
+                                        ↓
+                             bias_gate_candidates
+                                        ↓
+                              selection_decision
+                             ┌──────────┴──────────┐
+                   register_and_promote     selection_rejected
+                             └──────────┬──────────┘
+                                lifecycle_complete
                                         ↓
                             compute_patient_analytics
                                         ↓
@@ -718,7 +735,7 @@ gs://calm-ai_model_registry/models/bertopic/
 
 ### Indexes
 
-- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id` + `vector_index` (Atlas vector search on `embedding`, 384 dims, cosine)
+- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id` + `vector_index` (Atlas vector search on `embedding`, configurable dims via `EMBEDDING_DIM`, cosine)
 - `conversations`: `conversation_id` (unique)
 - `journals`: `journal_id` (unique), `patient_id`, `therapist_id`
 - `incoming_journals`: `journal_id` (unique), `patient_id`, `is_processed`
@@ -726,7 +743,7 @@ gs://calm-ai_model_registry/models/bertopic/
 
 ### Vector Search
 
-The vector search index (`vector_index`) is created automatically by `python src/storage/mongodb_client.py create-indexes` via `_ensure_vector_search_index()`. It uses cosine similarity on `rag_vectors.embedding` (384 dims) with filter fields for `patient_id` and `doc_type`. Can also be created manually via the Atlas UI.
+The vector search index (`vector_index`) is created automatically by `python src/storage/mongodb_client.py create-indexes` via `_ensure_vector_search_index()`. It uses cosine similarity on `rag_vectors.embedding` with configurable dimensions (via `EMBEDDING_DIM`, default 384) and filter fields for `patient_id` and `doc_type`. Can also be created manually via the Atlas UI.
 
 ---
 
@@ -836,20 +853,26 @@ Prerequisites:
 
 ### Deployment Architecture
 
-| Component | Service | Estimated Cost |
-|---|---|---|
-| Airflow (data pipeline) | GCE VM `e2-standard-4` | ~$100/mo |
-| GPU training jobs | Vertex AI Custom Training (L4 spot) | ~$25/mo on-demand |
-| Frontend | Cloud Run (static) | ~$0 (free tier) |
-| Backend (FastAPI) | Cloud Run | ~$10/mo |
-| MongoDB | MongoDB Atlas (free tier → M10) | $0–$57/mo |
-| Model artifacts | GCS bucket | ~$1/mo |
+| Component | Service | Deploy Script | Estimated Cost |
+|---|---|---|---|
+| Airflow (data pipeline) | GCE VM `e2-standard-4` | `deploy/deploy-gce.sh` | ~$100/mo |
+| Frontend | Cloud Run (serverless) | `deploy/deploy-frontend.sh` | ~$0 (free tier) |
+| Backend (FastAPI) | Cloud Run (serverless) | `deploy/deploy-backend.sh` | ~$10/mo |
+| Embedding (Qwen 8B) | Vertex AI Endpoint (L4 GPU) | `deploy/deploy-embedding-endpoint.sh` | ~$0.90/hr (on-demand) |
+| MongoDB | MongoDB Atlas (free tier → M10) | — | $0–$57/mo |
+| Model artifacts | GCS bucket | — | ~$1/mo |
+| Docker images | Artifact Registry | `deploy.sh` (initial) | ~$1/mo |
 
 ### Files
 
-- `cloudbuild.yaml` — Cloud Build config (build + push Docker image to Artifact Registry)
-- `deploy.sh` — One-script GCP setup (enable APIs, create repos/buckets, submit build)
-- `.github/workflows/deploy.yml` — GitHub Actions CD (auto-deploys on push to `main` after CI passes)
+- `cloudbuild.yaml` — Cloud Build config (build + push Airflow Docker image to Artifact Registry)
+- `deploy.sh` — One-time GCP setup (enable APIs, create repos/buckets, firewall rules, submit build)
+- `deploy/deploy-backend.sh` — Build, push, deploy backend to Cloud Run
+- `deploy/deploy-frontend.sh` — Build, push, deploy frontend to Cloud Run (auto-detects backend URL)
+- `deploy/deploy-gce.sh` — Provision GCE VM for Airflow, copy `.env` and GCS key
+- `deploy/deploy-embedding-endpoint.sh` — Deploy/undeploy Qwen 8B on Vertex AI L4 GPU (up/down)
+- `deploy/gce-startup.sh` — GCE VM startup script (Docker install, Artifact Registry auth)
+- `.github/workflows/deploy.yml` — GitHub Actions CD (4 parallel builds on push to `main`)
 
 ---
 
@@ -879,6 +902,9 @@ Prerequisites:
 | `ENABLE_MODEL_ROLLBACK` | No | Enable automatic rollback on smoke test failure (default: `true`) |
 | `GCP_PROJECT_ID` | No | GCP project ID — enables Vertex AI Model Registry when set |
 | `GCP_REGION` | No | GCP region for Vertex AI (default: `us-central1`) |
+| `USE_EMBEDDING_SERVICE` | No | Route embeddings to remote endpoint (default: `false`) |
+| `EMBEDDING_SERVICE_URL` | No | URL of the remote embedding endpoint (required when `USE_EMBEDDING_SERVICE=true`) |
+| `EMBEDDING_DIM` | No | Embedding dimension (default: `384`, set to `4096` for Qwen prod) |
 | `ENABLE_DRIFT_DETECTION` | No | Enable data drift detection as retraining trigger (default: `true`) |
 | `DRIFT_VOCAB_THRESHOLD` | No | Cosine similarity below this triggers vocabulary drift (default: `0.65`) |
 | `DRIFT_EMBEDDING_THRESHOLD` | No | Cosine distance above this triggers embedding drift (default: `0.30`) |

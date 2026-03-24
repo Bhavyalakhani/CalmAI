@@ -39,16 +39,18 @@ echo ""
 gcloud config set project "$PROJECT_ID"
 
 # 2. enable required APIs
-echo "[1/5] Enabling GCP APIs..."
+echo "[1/6] Enabling GCP APIs..."
 gcloud services enable \
     artifactregistry.googleapis.com \
     cloudbuild.googleapis.com \
     aiplatform.googleapis.com \
     storage.googleapis.com \
+    run.googleapis.com \
+    compute.googleapis.com \
     --quiet
 
 # 3. create artifact registry docker repo (idempotent)
-echo "[2/5] Creating Artifact Registry repo..."
+echo "[2/6] Creating Artifact Registry repo..."
 if ! gcloud artifacts repositories describe "$REPO_NAME" \
     --location="$REGION" --format="value(name)" 2>/dev/null; then
     gcloud artifacts repositories create "$REPO_NAME" \
@@ -61,12 +63,12 @@ else
 fi
 
 # 4. configure docker auth for artifact registry
-echo "[3/5] Configuring Docker auth..."
+echo "[3/6] Configuring Docker auth..."
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
 # 5. create GCS bucket for model artifacts (if configured)
 if [[ -n "$BUCKET_NAME" ]]; then
-    echo "[4/5] Creating GCS bucket..."
+    echo "[4/6] Creating GCS bucket..."
     if ! gsutil ls "gs://$BUCKET_NAME" 2>/dev/null; then
         gsutil mb -l "$REGION" "gs://$BUCKET_NAME"
         echo "  Created: gs://$BUCKET_NAME"
@@ -74,14 +76,31 @@ if [[ -n "$BUCKET_NAME" ]]; then
         echo "  Already exists: gs://$BUCKET_NAME"
     fi
 else
-    echo "[4/5] Skipping GCS bucket (MODEL_REGISTRY_BUCKET not set)"
+    echo "[4/6] Skipping GCS bucket (MODEL_REGISTRY_BUCKET not set)"
 fi
 
-# 6. submit cloud build
-echo "[5/5] Submitting Cloud Build..."
+# 6. create firewall rule for airflow UI (idempotent)
+echo "[5/6] Creating firewall rule for Airflow UI..."
+if ! gcloud compute firewall-rules describe allow-airflow-ui --format="value(name)" 2>/dev/null; then
+    gcloud compute firewall-rules create allow-airflow-ui \
+        --direction=INGRESS \
+        --action=ALLOW \
+        --rules=tcp:8080 \
+        --target-tags=airflow \
+        --source-ranges=0.0.0.0/0 \
+        --description="Allow Airflow web UI access on port 8080" \
+        --quiet
+    echo "  Created: allow-airflow-ui"
+else
+    echo "  Already exists: allow-airflow-ui"
+fi
+
+# 7. submit cloud build
+TAG=$(git rev-parse --short HEAD 2>/dev/null || echo "manual")
+echo "[6/6] Submitting Cloud Build (tag: $TAG)..."
 gcloud builds submit \
     --config cloudbuild.yaml \
-    --substitutions="_REGION=$REGION,_REPO=$REPO_NAME" \
+    --substitutions="_REGION=$REGION,_REPO=$REPO_NAME,_TAG=$TAG" \
     .
 
 echo ""
@@ -92,10 +111,9 @@ echo ""
 echo "Docker image pushed to:"
 echo "  ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/calmai-airflow:latest"
 echo ""
-echo "Next steps:"
-echo "  1. Set up a GCE VM (e2-standard-4) to run Airflow with docker-compose"
-echo "  2. Pull the image: docker pull ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/calmai-airflow:latest"
-echo "  3. Update docker-compose.yaml to use the pushed image instead of local build"
-echo "  4. Set GCP_PROJECT_ID=${PROJECT_ID} in your VM's .env to enable Vertex AI"
-echo "  5. For GPU training jobs, use Vertex AI Custom Training Jobs with L4 GPUs"
+echo "Next steps (run from project root):"
+echo "  1. Deploy backend:   ./deploy/deploy-backend.sh"
+echo "  2. Deploy frontend:  BACKEND_URL=<backend-url> ./deploy/deploy-frontend.sh"
+echo "  3. Deploy GCE VM:    ./deploy/deploy-gce.sh"
+echo "  4. Deploy embedding: EMBEDDING_MODEL=jainam02/qwen3-8b-mh-st3-merged ./deploy/deploy-embedding-endpoint.sh up"
 echo ""

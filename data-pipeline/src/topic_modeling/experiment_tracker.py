@@ -325,12 +325,27 @@ class ExperimentTracker:
             model_labels.update(labels)
 
         try:
+            # use our own airflow image from artifact registry as the container.
+            # vertex ai requires the URI to be from artifact registry or GCR —
+            # docker hub images (e.g. python:3.10-slim) are rejected.
+            # pre-built vertex ai containers (tf2, sklearn, etc.) validate the
+            # artifact directory for framework-specific files (saved_model.pb,
+            # model.pkl) which BERTopic doesn't produce.
+            # using a custom container skips artifact validation entirely.
+            # we never deploy this model to an endpoint — the registry is purely
+            # a versioned catalog — so the container is never actually pulled.
+            gcp_region = config.settings.GCP_REGION or "us-central1"
+            gcp_project = config.settings.GCP_PROJECT_ID
+            container_uri = (
+                f"{gcp_region}-docker.pkg.dev/{gcp_project}"
+                f"/calmai-docker/calmai-airflow:latest"
+            )
             model = aiplatform.Model.upload(
                 display_name=model_name,
                 artifact_uri=artifact_uri,
-                serving_container_image_uri=(
-                    "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-3:latest"
-                ),
+                serving_container_image_uri=container_uri,
+                serving_container_predict_route="/predict",
+                serving_container_health_route="/health",
                 labels=model_labels,
             )
             resource_name = model.resource_name

@@ -37,7 +37,10 @@ def smoke_test_model(model_name: str, model_path: str, sample_docs: list) -> Dic
         return {"passed": True, "warning": "no_sample_docs"}
 
     try:
-        topics, probs = model.transform(sample_docs)
+        from embedding.embedding_client import EmbeddingClient
+        client = EmbeddingClient()
+        embeddings = client.embed(sample_docs, show_progress=False)
+        topics, probs = model.transform(sample_docs, embeddings)
 
         if len(topics) != len(sample_docs):
             return {

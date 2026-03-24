@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "configs"))
 
 from monitoring.drift_detector import DriftDetector
+from conftest import FAKE_DIM
 
 
 @pytest.fixture
@@ -67,13 +68,13 @@ class TestVocabularyDrift:
 
 class TestEmbeddingDrift:
     def test_no_drift_same_embeddings(self, detector):
-        embeddings = np.random.randn(50, 384).astype(np.float32)
+        embeddings = np.random.randn(50, FAKE_DIM).astype(np.float32)
         result = detector.detect_embedding_drift(embeddings, embeddings)
         assert result["centroid_distance"] < 0.01
         assert result["drifted"] is False
 
     def test_drift_shifted_embeddings(self, detector):
-        ref = np.random.randn(50, 384).astype(np.float32)
+        ref = np.random.randn(50, FAKE_DIM).astype(np.float32)
         # shift current embeddings significantly
         cur = ref + 5.0
         result = detector.detect_embedding_drift(ref, cur)
@@ -81,30 +82,30 @@ class TestEmbeddingDrift:
         assert result["centroid_distance"] > 0.0
 
     def test_spread_ratio_reported(self, detector):
-        ref = np.random.randn(50, 384).astype(np.float32)
-        cur = np.random.randn(50, 384).astype(np.float32) * 3.0  # wider spread
+        ref = np.random.randn(50, FAKE_DIM).astype(np.float32)
+        cur = np.random.randn(50, FAKE_DIM).astype(np.float32) * 3.0  # wider spread
         result = detector.detect_embedding_drift(ref, cur)
         assert "spread_ratio" in result
         assert result["spread_ratio"] > 1.0
 
     def test_empty_reference_embeddings(self, detector):
-        empty = np.array([]).reshape(0, 384)
-        cur = np.random.randn(10, 384).astype(np.float32)
+        empty = np.array([]).reshape(0, FAKE_DIM)
+        cur = np.random.randn(10, FAKE_DIM).astype(np.float32)
         result = detector.detect_embedding_drift(empty, cur)
         assert result["drifted"] is False
         assert result["reason"] == "insufficient embeddings"
 
     def test_empty_current_embeddings(self, detector):
-        ref = np.random.randn(10, 384).astype(np.float32)
-        empty = np.array([]).reshape(0, 384)
+        ref = np.random.randn(10, FAKE_DIM).astype(np.float32)
+        empty = np.array([]).reshape(0, FAKE_DIM)
         result = detector.detect_embedding_drift(ref, empty)
         assert result["drifted"] is False
 
     def test_similar_embeddings_no_drift(self, detector):
         rng = np.random.default_rng(42)
-        ref = rng.standard_normal((100, 384)).astype(np.float32)
+        ref = rng.standard_normal((100, FAKE_DIM)).astype(np.float32)
         # add small noise — should not drift
-        cur = ref + rng.standard_normal((100, 384)).astype(np.float32) * 0.01
+        cur = ref + rng.standard_normal((100, FAKE_DIM)).astype(np.float32) * 0.01
         result = detector.detect_embedding_drift(ref, cur)
         assert result["drifted"] is False
 
@@ -151,7 +152,7 @@ class TestTopicDrift:
 class TestCombinedDriftCheck:
     def test_no_drift_overall(self, detector):
         docs = ["therapy anxiety depression help"] * 30
-        embeddings = np.random.randn(30, 384).astype(np.float32)
+        embeddings = np.random.randn(30, FAKE_DIM).astype(np.float32)
         topics = [0, 1, 2] * 10
 
         result = detector.run_drift_check(
@@ -193,7 +194,7 @@ class TestCombinedDriftCheck:
     def test_any_signal_triggers_drift(self, detector):
         """drift is detected if ANY signal exceeds its threshold"""
         ref_docs = ["same text"] * 30
-        ref_emb = np.random.randn(30, 384).astype(np.float32)
+        ref_emb = np.random.randn(30, FAKE_DIM).astype(np.float32)
         cur_emb = ref_emb + 10.0  # big shift in embeddings
 
         result = detector.run_drift_check(

@@ -27,6 +27,12 @@ class Settings:
     MONGODB_URI: str = os.getenv("MONGODB_URI", "")
     MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE", "calm_ai")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "384"))
+
+    # embedding service — when enabled, routes embedding calls to a remote endpoint
+    # instead of loading a local SentenceTransformer model
+    USE_EMBEDDING_SERVICE: bool = os.getenv("USE_EMBEDDING_SERVICE", "false").lower() == "true"
+    EMBEDDING_SERVICE_URL: str = os.getenv("EMBEDDING_SERVICE_URL", "")
 
     # incoming journal validation thresholds
     INCOMING_JOURNAL_MIN_LENGTH: int = 10

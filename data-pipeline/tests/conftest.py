@@ -59,6 +59,9 @@ def mock_settings(tmp_path):
     # Vertex AI Model Registry
     s.GCP_PROJECT_ID = ""
     s.GCP_REGION = "us-central1"
+    s.EMBEDDING_DIM = FAKE_DIM
+    s.USE_EMBEDDING_SERVICE = False
+    s.EMBEDDING_SERVICE_URL = ""
     s.ensure_directories = Mock()
     return s
 
@@ -169,7 +172,7 @@ def embedded_conversations_df():
             "User concern: My sleep has been terrible.\n\nCounselor response: Poor sleep can affect many areas of life.",
             "User concern: I had a fight with my partner.\n\nCounselor response: Relationship conflicts are common stress sources.",
         ],
-        "embedding": [[0.1] * 384, [0.2] * 384, [0.3] * 384],
+        "embedding": [[0.1] * FAKE_DIM, [0.2] * FAKE_DIM, [0.3] * FAKE_DIM],
         "context_word_count": [5, 5, 7],
         "context_char_count": [27, 27, 30],
         "context_sentence_count": [1, 1, 2],
@@ -179,7 +182,7 @@ def embedded_conversations_df():
         "response_sentence_count": [1, 1, 1],
         "response_avg_word_length": [5.5, 5.0, 7.5],
         "embedding_model": ["test-model"] * 3,
-        "embedding_dim": [384] * 3,
+        "embedding_dim": [FAKE_DIM] * 3,
         "is_embedded": [True] * 3,
     })
 
@@ -202,7 +205,7 @@ def embedded_journals_df():
             "[2026-01-12] I practiced deep breathing exercises.",
             "[2026-01-15] Had a productive therapy session.",
         ],
-        "embedding": [[0.1] * 384, [0.2] * 384, [0.3] * 384],
+        "embedding": [[0.1] * FAKE_DIM, [0.2] * FAKE_DIM, [0.3] * FAKE_DIM],
         "word_count": [7, 5, 5],
         "char_count": [30, 36, 31],
         "sentence_count": [1, 1, 1],
@@ -213,7 +216,7 @@ def embedded_journals_df():
         "year": [2026, 2026, 2026],
         "days_since_last": [0, 2, 3],
         "embedding_model": ["test-model"] * 3,
-        "embedding_dim": [384] * 3,
+        "embedding_dim": [FAKE_DIM] * 3,
         "is_embedded": [True] * 3,
     })
 
@@ -235,12 +238,18 @@ def make_fake_model(dim=FAKE_DIM):
 
 @pytest.fixture
 def embedding_service():
-    """pre-configured EmbeddingService with a fake model"""
+    """pre-configured EmbeddingService with a fake model injected into its client"""
     from embedding.embedder import EmbeddingService
 
     service = EmbeddingService(model_name="test-model", batch_size=4)
-    service.model = make_fake_model()
+    fake_model = make_fake_model()
+    # inject fake model into the underlying client so embed_texts works
+    service.client._local_model = fake_model
+    service.client._embedding_dim = FAKE_DIM
+    service.client.use_service = False
     service.embedding_dim = FAKE_DIM
+    # keep service.model for test assertions that check encode call count
+    service.model = fake_model
     return service
 
 

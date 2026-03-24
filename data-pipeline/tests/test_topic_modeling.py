@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "configs"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from conftest import FAKE_DIM
+
 
 # config tests
 
@@ -431,7 +433,7 @@ class TestTopicModelTrainer:
         mock_bert_model = _make_mock_bertopic(num_topics=5, num_docs=50)
         trainer._build_bertopic = MagicMock(return_value=mock_bert_model)
 
-        embeddings = np.random.rand(50, 384).astype(np.float32)
+        embeddings = np.random.rand(50, FAKE_DIM).astype(np.float32)
         docs = [f"document {i}" for i in range(50)]
 
         result = trainer.train(docs, embeddings=embeddings)
@@ -639,6 +641,10 @@ class TestTopicModelInference:
         inf._loaded = True
         inf.model = MagicMock()
         inf.model.transform.return_value = ([0, 1, 0], np.array([[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]]))
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(3, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         topics, probs = inf.predict(["doc1", "doc2", "doc3"])
         assert topics == [0, 1, 0]
@@ -659,6 +665,10 @@ class TestTopicModelInference:
             "llm": ["Anxiety", "Depression", "Work stress"],
         })
         inf.model.get_topic.return_value = [("stress", 0.5), ("work", 0.3)]
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(1, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         result = inf.predict_single("feeling stressed about work")
         assert result["topic_id"] == 2
@@ -813,6 +823,10 @@ class TestTopicModelInference:
             "Name": ["T0", "T1"], "llm": ["Anxiety", "Depression"],
         })
         inf.model.get_topic.return_value = [("word1", 0.5)]
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(2, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         results = inf.classify_with_distribution(["doc1", "doc2"])
         assert len(results) == 2
@@ -863,6 +877,10 @@ class TestTopicModelInference:
             "Name": ["T0", "T1"],
             "llm": ["Crisis Level", "Mild Concern"],
         })
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(3, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         result = inf.predict_severity(["doc1", "doc2", "doc3"])
         assert result == ["crisis", "mild", "unknown"]

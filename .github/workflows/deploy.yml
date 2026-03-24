@@ -1,6 +1,9 @@
 # continuous deployment pipeline for CalmAI
-# triggers Cloud Build after CI passes on push to main
-# builds the Airflow Docker image and pushes to Google Artifact Registry
+# builds and pushes Docker images for all components to Google Artifact Registry
+# 4 parallel jobs: data-pipeline (Airflow), frontend, backend, embedding-server
+#
+# currently set to manual-only (workflow_dispatch) to avoid GCP costs on every push.
+# to re-enable automatic deploys, uncomment the 'push' trigger below.
 #
 # prerequisites:
 #   1. GCP_PROJECT_ID, GCP_REGION, GCP_SA_KEY secrets set in GitHub repo settings
@@ -10,11 +13,16 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'data-pipeline/**'
-      - '.github/workflows/deploy.yml'
+  workflow_dispatch:  # manual trigger from GitHub Actions tab
+  # uncomment below to auto-deploy on push to main:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'data-pipeline/**'
+  #     - 'frontend/**'
+  #     - 'backend/**'
+  #     - 'deploy/**'
+  #     - '.github/workflows/deploy.yml'
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -23,85 +31,117 @@ concurrency:
 env:
   GCP_REGION: us-central1
   REPO_NAME: calmai-docker
-  IMAGE_NAME: calmai-airflow
 
 jobs:
-  # wait for CI to pass first
-  ci-check:
-    name: Wait for CI
+  # shared auth setup anchor
+  deploy-pipeline:
+    name: Build Pipeline (Airflow)
     runs-on: ubuntu-latest
-    steps:
-      - name: Wait for CI workflow
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.sha }}
-          check-name: CI Pass
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 30
-
-  deploy:
-    name: Build & Push to Artifact Registry
-    runs-on: ubuntu-latest
-    needs: ci-check
-    if: github.ref == 'refs/heads/main'
-
     permissions:
       contents: read
       id-token: write
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - name: Build Docker image
-        working-directory: data-pipeline
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push Airflow image
         run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow
+          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest data-pipeline/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+  deploy-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push frontend image
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-frontend
           docker build \
-            -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest \
-            .
+            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.BACKEND_URL }} \
+            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
+            frontend/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
 
-      - name: Push Docker image
+  deploy-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push backend image
         run: |
-          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend
+          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest backend/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
 
-      - name: Verify deployment
+  build-embedding-server:
+    name: Build Embedding Server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push embedding server image
         run: |
-          echo "Image pushed successfully:"
-          echo "  ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "  ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server
+          docker build \
+            --build-arg EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL }} \
+            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
+            -f data-pipeline/gpu/embedding_server/Dockerfile \
+            data-pipeline/gpu/embedding_server/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
 
-          # verify the image exists in the registry
-          gcloud artifacts docker images describe \
-            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-            --format="value(image_summary.digest)" && echo "Image verified in Artifact Registry"
-
-      - name: Post deployment summary
-        if: success()
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-pipeline, deploy-frontend, deploy-backend, build-embedding-server]
+    if: always()
+    steps:
+      - name: Post summary
         run: |
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`${{ env.IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Tag** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Registry** | \`${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trigger** | Push to \`main\` (\`${{ github.event.head_commit.message }}\`) |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Pull the latest image:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pipeline (Airflow) | ${{ needs.deploy-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Embedding Server | ${{ needs.build-embedding-server.result }} |" >> $GITHUB_STEP_SUMMARY

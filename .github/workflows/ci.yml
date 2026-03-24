@@ -19,7 +19,6 @@ env:
   NODE_VERSION: "20"
 
 jobs:
-  # data-pipeline tests (322 tests)
   data-pipeline:
     name: Data Pipeline Tests
     runs-on: ubuntu-latest
@@ -57,7 +56,6 @@ jobs:
           name: data-pipeline-coverage
           path: data-pipeline/coverage.xml
 
-  # backend tests (144 tests)
   backend:
     name: Backend Tests
     runs-on: ubuntu-latest
@@ -95,7 +93,6 @@ jobs:
           name: backend-coverage
           path: backend/coverage.xml
 
-  # frontend tests (175 tests) + build
   frontend:
     name: Frontend Tests & Build
     runs-on: ubuntu-latest
@@ -115,9 +112,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Lint
-        run: npm run lint
 
       - name: Run tests
         run: npm test

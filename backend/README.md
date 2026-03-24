@@ -23,6 +23,7 @@ backend/
 │   ├── services/
 │   │   ├── db.py            # Async MongoDB (Motor) - singleton Database class (9 collections)
 │   │   ├── auth_service.py  # Password hashing (bcrypt), JWT encode/decode (python-jose)
+│   │   ├── embedding_client.py  # LangChain-compatible CalmAIEmbeddings (local or remote Vertex AI endpoint)
 │   │   └── rag_service.py   # LangChain RAG - embeddings, vector search, Gemini LLM, intent classification, fallback text search
 │   └── routers/
 │       ├── auth.py          # POST /auth/signup, POST /auth/login, GET /auth/me, POST /auth/refresh, PATCH /auth/profile, PATCH /auth/notifications, PATCH /auth/password, DELETE /auth/account
@@ -45,6 +46,8 @@ backend/
 │   ├── test_dashboard.py    # 8 tests (stats, mood trend, NaN handling)
 │   ├── test_search.py       # 26 tests (RAG, conversation history, topic detection)
 │   └── test_prompts.py      # 15 tests (create prompt, list pending, list all, respond)
+├── Dockerfile         # FastAPI container for Cloud Run deployment
+├── .dockerignore      # Excludes .env, __pycache__, .git
 ├── requirements.txt
 └── pytest.ini
 ```
@@ -240,6 +243,27 @@ The `GET /journals` and `GET /dashboard/mood-trend/{id}` endpoints sanitize mood
 | `pipeline_metadata` | Pipeline execution audit trail |
 | `invite_codes` | Patient onboarding invite codes |
 | `prompts` | Therapist-assigned reflection prompts |
+
+## Embedding Service
+
+The backend uses a unified `CalmAIEmbeddings` class (`app/services/embedding_client.py`) for all embedding operations (RAG vector search). It implements LangChain's `Embeddings` interface and routes to either:
+
+- **Local mode** (default, `USE_EMBEDDING_SERVICE=false`): Loads `all-MiniLM-L6-v2` (384 dims) on CPU via `HuggingFaceEmbeddings`
+- **Remote mode** (`USE_EMBEDDING_SERVICE=true`): Sends texts to a Vertex AI endpoint running Qwen 8B (4096 dims) via HTTP POST
+
+Configuration in `app/config.py`:
+- `USE_EMBEDDING_SERVICE` — enable remote endpoint (default: `false`)
+- `EMBEDDING_SERVICE_URL` — endpoint URL (required when service is enabled)
+- `EMBEDDING_DIM` — embedding dimension (default: `384`, set to `4096` for Qwen)
+
+## Deployment (Cloud Run)
+
+```bash
+# build and deploy to Cloud Run
+bash deploy/deploy-backend.sh [PROJECT_ID] [REGION]
+```
+
+The Dockerfile pre-downloads the embedding model at build time for faster cold starts. Environment variables (`MONGODB_URI`, `GEMINI_API_KEY`, `JWT_SECRET`, etc.) are passed to Cloud Run via `--set-env-vars`.
 
 ## Testing
 

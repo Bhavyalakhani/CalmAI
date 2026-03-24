@@ -1,6 +1,6 @@
 # embedding service and pipeline functions
-# uses sentence-transformers (all-MiniLM-L6-v2, 384 dims) to embed
-# conversations, journals, and incoming runtime journals
+# routes through EmbeddingClient which supports both local SentenceTransformer
+# and remote Vertex AI endpoint (controlled by USE_EMBEDDING_SERVICE)
 
 import logging
 import time
@@ -9,7 +9,6 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
@@ -17,6 +16,7 @@ import config
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from preprocessing.base_preprocessor import BasePreprocessor
+from embedding.embedding_client import EmbeddingClient
 
 # columns that every embedded journal parquet must have
 JOURNAL_EMBEDDING_SCHEMA = [
@@ -55,24 +55,19 @@ class EmbeddingService:
         self.settings = config.settings
         self.model_name = model_name or self.settings.EMBEDDING_MODEL
         self.batch_size = batch_size
+        self.client = EmbeddingClient(model_name=self.model_name, batch_size=self.batch_size)
         self.model = None
         self.embedding_dim = None
 
-    # caches the model so we only load once
-    def load_model(self) -> SentenceTransformer:
-        if self.model is not None:
-            return self.model
+    def load_model(self):
+        """initialize the embedding client and cache the embedding dimension."""
+        if self.embedding_dim is not None:
+            return self.client
+        self.embedding_dim = self.client.embedding_dim
+        logger.info(f"Embedding ready: model={self.model_name}, dim={self.embedding_dim}, "
+                     f"remote={self.client.use_service}")
+        return self.client
 
-        logger.info(f"Loading embedding model: {self.model_name}")
-        start = time.time()
-        self.model = SentenceTransformer(self.model_name)
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
-        elapsed = time.time() - start
-        logger.info(f"Model loaded in {elapsed:.2f}s | Embedding dimension: {self.embedding_dim}")
-        return self.model
-
-    # encodes in batches using a pre-allocated output array to avoid the extra
-    # memory copy that np.vstack() would create at the end
     def embed_texts(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
         self.load_model()
 
@@ -81,39 +76,8 @@ class EmbeddingService:
             return np.array([]).reshape(0, self.embedding_dim)
 
         total = len(texts)
-        num_batches = (total + self.batch_size - 1) // self.batch_size
-        logger.info(
-            f"Embedding {total} texts in {num_batches} batches "
-            f"(batch_size={self.batch_size}, embedding_dim={self.embedding_dim})"
-        )
-
-        # pre-allocate output array — avoids the full duplicate created by np.vstack
-        result = np.empty((total, self.embedding_dim), dtype=np.float32)
-        start = time.time()
-
-        for i in range(0, total, self.batch_size):
-            batch = texts[i : i + self.batch_size]  # noqa: E203
-            batch_num = (i // self.batch_size) + 1
-
-            batch_embeddings = self.model.encode(
-                batch,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=False,
-            )
-            result[i : i + len(batch)] = batch_embeddings  # noqa: E203
-
-            if show_progress and (batch_num % 10 == 0 or batch_num == num_batches):
-                elapsed = time.time() - start
-                rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
-                logger.info(
-                    f"  Batch {batch_num}/{num_batches} | "
-                    f"{i + len(batch)}/{total} texts | {rate:.0f} texts/sec"
-                )
-
-        total_time = time.time() - start
-        logger.info(f"Embedding complete: {total} texts in {total_time:.2f}s | Shape: {result.shape}")
-        return result
+        logger.info(f"Embedding {total} texts (dim={self.embedding_dim})")
+        return self.client.embed(texts, show_progress=show_progress)
 
     def embed_dataframe(self, df: pd.DataFrame, text_column: str) -> pd.DataFrame:
         if text_column not in df.columns:

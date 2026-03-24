@@ -20,13 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 class TopicModelInference:
-    """loads a saved bertopic model and predicts topics on new documents"""
+    """loads a saved bertopic model and predicts topics on new documents.
+
+    always pre-embeds documents via EmbeddingClient before calling
+    BERTopic.transform(), ensuring the model never auto-embeds internally.
+    this allows seamless switching between local and remote embedding.
+    """
 
     def __init__(self, model_type: str = "journals"):
         self.model_type = model_type
         self.model = None
         self.embedding_model = None
         self._loaded = False
+        self._embedding_client = None
+
+    def _get_embedding_client(self):
+        """lazy-init the embedding client."""
+        if self._embedding_client is None:
+            from embedding.embedding_client import EmbeddingClient
+            self._embedding_client = EmbeddingClient()
+        return self._embedding_client
 
     def load(self, path: Optional[Path] = None) -> bool:
         """load a saved bertopic model from disk.
@@ -65,6 +78,10 @@ class TopicModelInference:
     ) -> Tuple[List[int], Optional[np.ndarray]]:
         """predict topics for new documents.
 
+        if embeddings are not provided, pre-computes them via EmbeddingClient
+        (local or remote depending on USE_EMBEDDING_SERVICE). this ensures
+        BERTopic never triggers its internal embedding step.
+
         args:
             docs: list of text documents
             embeddings: pre-calculated embeddings (optional)
@@ -74,6 +91,10 @@ class TopicModelInference:
         """
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
+
+        if embeddings is None:
+            client = self._get_embedding_client()
+            embeddings = client.embed(docs, show_progress=False)
 
         topics, probs = self.model.transform(docs, embeddings)
         logger.info(f"Predicted topics for {len(docs)} documents")
@@ -91,7 +112,9 @@ class TopicModelInference:
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
 
-        topics, probs = self.model.transform([text])
+        client = self._get_embedding_client()
+        embeddings = client.embed([text], show_progress=False)
+        topics, probs = self.model.transform([text], embeddings)
         topic_id = int(topics[0])
 
         result = {
@@ -248,6 +271,10 @@ class TopicModelInference:
         """
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
+
+        if embeddings is None:
+            client = self._get_embedding_client()
+            embeddings = client.embed(docs, show_progress=False)
 
         topics, probs = self.model.transform(docs, embeddings)
         results = []

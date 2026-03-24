@@ -604,12 +604,15 @@ def selection_branch_callable(**context):
     return "selection_rejected"
 
 
-def _upload_model_to_gcs(model_path: str, gcs_key: str) -> bool:
-    """upload a local model directory to GCS with versioning. returns True on success."""
+def _upload_model_to_gcs(model_path: str, gcs_key: str):
+    """upload a local model directory to GCS with versioning.
+
+    returns the full gs:// URI of the versioned upload on success, or None on failure.
+    """
     bucket_name = settings.MODEL_REGISTRY_BUCKET
     if not bucket_name:
         logger.warning("MODEL_REGISTRY_BUCKET not set — skipping GCS upload")
-        return False
+        return None
     try:
         from pathlib import Path
         from datetime import datetime, timezone
@@ -620,21 +623,22 @@ def _upload_model_to_gcs(model_path: str, gcs_key: str) -> bool:
         model_dir = Path(model_path)
         if not model_dir.exists():
             logger.warning(f"Model path does not exist, skipping GCS upload: {model_path}")
-            return False
+            return None
         version_tag = datetime.now(timezone.utc).strftime("v_%Y%m%d_%H%M%S")
         files = list(model_dir.rglob("*")) if model_dir.is_dir() else [model_dir]
         uploaded = 0
         for f in files:
             if f.is_file():
-                rel = f.relative_to(model_dir.parent)
+                rel = f.relative_to(model_dir)
                 # versioned copy only (no latest/ on GCS — local latest/ is the source of truth)
                 bucket.blob(f"{gcs_key}/{version_tag}/{rel}").upload_from_filename(str(f))
                 uploaded += 1
-        logger.info(f"GCS upload: {uploaded} files → gs://{bucket_name}/{gcs_key}/{version_tag}/")
-        return True
+        gcs_uri = f"gs://{bucket_name}/{gcs_key}/{version_tag}"
+        logger.info(f"GCS upload: {uploaded} files → {gcs_uri}/")
+        return gcs_uri
     except Exception as e:
         logger.warning(f"GCS upload failed for {model_path}: {e}")
-        return False
+        return None
 
 
 def selection_rejected_callable(**context):
@@ -763,14 +767,13 @@ def register_and_promote_models_callable(**context):
             # upload promoted model to GCS first (Vertex AI needs the GCS URI)
             run_label = mlflow_run_id or "unknown_run"
             gcs_key = f"{settings.MODEL_REGISTRY_PREFIX}/{model_type}/promoted/{run_label}"
-            gcs_uploaded = _upload_model_to_gcs(model_path, gcs_key)
+            gcs_uri = _upload_model_to_gcs(model_path, gcs_key)
 
             # register with Vertex AI Model Registry (requires GCS artifact URI)
             tracker = ExperimentTracker(experiment_name=f"{model_type}_topic_model")
             resource_name = None
             if tracker.registry_enabled:
-                if gcs_uploaded:
-                    gcs_uri = f"gs://{settings.MODEL_REGISTRY_BUCKET}/{gcs_key}"
+                if gcs_uri:
                     resource_name = tracker.register_model(
                         model_name,
                         artifact_uri=gcs_uri,
@@ -818,7 +821,7 @@ def register_and_promote_models_callable(**context):
                 "resource_name": resource_name,
                 "model_path": str(model_path),
                 "mlflow_run_id": mlflow_run_id,
-                "gcs_key": gcs_key if gcs_uploaded else None,
+                "gcs_uri": gcs_uri,
             }
 
         ti.xcom_push(key="promotion_results", value=promotion_results)

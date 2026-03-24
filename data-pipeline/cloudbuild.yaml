@@ -1,9 +1,12 @@
 # Cloud Build CI/CD — builds and pushes the CalmAI Airflow Docker image
 # to Google Artifact Registry for deployment on GCE or Cloud Run.
 #
-# Usage:
+# Usage (manual):
 #   gcloud builds submit --config cloudbuild.yaml \
 #     --substitutions=_REGION=us-central1,_REPO=calmai-docker .
+#
+# When triggered by a git push, _TAG defaults to the short commit SHA.
+# When run manually, _TAG defaults to "manual".
 
 steps:
   # build the airflow docker image
@@ -11,7 +14,7 @@ steps:
     args:
       - 'build'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:${_TAG}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
       - '.'
@@ -20,7 +23,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'push'
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:${_TAG}'
 
   - name: 'gcr.io/cloud-builders/docker'
     args:
@@ -28,12 +31,13 @@ steps:
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
 
 images:
-  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:${_TAG}'
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/calmai-airflow:latest'
 
 substitutions:
   _REGION: us-central1
   _REPO: calmai-docker
+  _TAG: manual
 
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 
+from conftest import FAKE_DIM
+
 
 # incoming journal validation
 
@@ -231,7 +233,7 @@ class TestMongoDBStagingMethods:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["entry"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] entry"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
@@ -424,7 +426,7 @@ class TestPromptMoodPassthrough:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["responded to therapist prompt"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] responded to therapist prompt"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
@@ -487,7 +489,7 @@ class TestPromptMoodPassthrough:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["regular entry no prompt"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] regular entry no prompt"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
