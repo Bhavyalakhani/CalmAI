@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # deploy/undeploy the Qwen embedding model on Vertex AI Online Prediction Endpoint
 # usage:
-#   ./deploy/deploy-embedding-endpoint.sh up   [PROJECT_ID] [REGION]  # deploy
-#   ./deploy/deploy-embedding-endpoint.sh down  [PROJECT_ID] [REGION]  # undeploy (stops GPU billing)
+#   ./deploy/deploy-embedding-endpoint.sh up   [PROJECT_ID] [REGION]               # build, push, deploy
+#   ./deploy/deploy-embedding-endpoint.sh up   [PROJECT_ID] [REGION] --no-build    # skip build/push (image already in registry)
+#   ./deploy/deploy-embedding-endpoint.sh down  [PROJECT_ID] [REGION]              # undeploy (stops GPU billing)
 set -euo pipefail
 
 # load env vars from data-pipeline/.env (finds it relative to project root)
@@ -12,9 +13,13 @@ for envfile in "${PROJECT_ROOT}/data-pipeline/.env" "${PROJECT_ROOT}/.env"; do
     if [[ -f "$envfile" ]]; then set -a; source "$envfile"; set +a; break; fi
 done
 
-ACTION="${1:?Usage: $0 up|down [PROJECT_ID] [REGION]}"
+ACTION="${1:?Usage: $0 up|down [PROJECT_ID] [REGION] [--no-build]}"
 PROJECT_ID="${2:-${GCP_PROJECT_ID:?GCP_PROJECT_ID not set}}"
 REGION="${3:-us-central1}"
+SKIP_BUILD=false
+for arg in "$@"; do
+  if [[ "$arg" == "--no-build" ]]; then SKIP_BUILD=true; fi
+done
 REPO="calmai-docker"
 IMAGE_NAME="calmai-embedding-server"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE_NAME}"
@@ -28,21 +33,26 @@ case "${ACTION}" in
     echo "Project: ${PROJECT_ID}, Region: ${REGION}"
     echo "Model: ${EMBEDDING_MODEL}"
 
-    # authenticate docker with artifact registry
-    echo "Authenticating Docker with Artifact Registry..."
-    gcloud auth print-access-token --project="${PROJECT_ID}" | \
-      docker login -u oauth2accesstoken --password-stdin "${REGION}-docker.pkg.dev"
+    if [ "${SKIP_BUILD}" = false ]; then
+      # authenticate docker with artifact registry
+      echo "Authenticating Docker with Artifact Registry..."
+      gcloud auth print-access-token --project="${PROJECT_ID}" | \
+        docker login -u oauth2accesstoken --password-stdin "${REGION}-docker.pkg.dev"
 
-    # 1. build and push the serving container
-    echo "Building embedding server image..."
-    docker build \
-      --build-arg EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
-      -t "${IMAGE}:latest" \
-      -f data-pipeline/gpu/embedding_server/Dockerfile \
-      data-pipeline/gpu/embedding_server/
+      # 1. build and push the serving container
+      echo "Building embedding server image..."
+      docker build \
+        --build-arg EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
+        -t "${IMAGE}:latest" \
+        -f data-pipeline/gpu/embedding_server/Dockerfile \
+        data-pipeline/gpu/embedding_server/
 
-    echo "Pushing to Artifact Registry..."
-    docker push "${IMAGE}:latest"
+      echo "Pushing to Artifact Registry..."
+      docker push "${IMAGE}:latest"
+    else
+      echo "Skipping build/push (--no-build flag set)"
+      echo "Assuming image already exists: ${IMAGE}:latest"
+    fi
 
     # 2. upload model to Vertex AI Model Registry (with custom container)
     echo "Registering model in Vertex AI..."
@@ -93,7 +103,7 @@ case "${ACTION}" in
       --region="${REGION}" \
       --model="${MODEL_ID}" \
       --display-name="${MODEL_NAME}-deployed" \
-      --machine-type=g2-standard-4 \
+      --machine-type=g2-standard-8 \
       --accelerator=type=nvidia-l4,count=1 \
       --min-replica-count=1 \
       --max-replica-count=1

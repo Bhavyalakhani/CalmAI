@@ -44,9 +44,17 @@ class InfoResponse(BaseModel):
 def load_model():
     global model, embedding_dim
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading model '{MODEL_NAME}' on {device}...")
+    # load from HF cache (offline, no network calls) in fp16 to fit L4 24GB
+    logger.info(f"Loading model '{MODEL_NAME}' on {device} in fp16...")
     t0 = time.time()
-    model = SentenceTransformer(MODEL_NAME, device=device)
+    model = SentenceTransformer(
+        MODEL_NAME,
+        device=device,
+        model_kwargs={
+            "torch_dtype": torch.float16,
+            "low_cpu_mem_usage": True,
+        },
+    )
     embedding_dim = model.get_sentence_embedding_dimension()
     elapsed = time.time() - t0
     logger.info(f"Model loaded in {elapsed:.1f}s — dim={embedding_dim}, device={device}")
@@ -62,7 +70,7 @@ def health():
 @app.get("/info", response_model=InfoResponse)
 def info():
     if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+        raise HTTPException(status_code=503, detail="Model still loading")
     return InfoResponse(
         model_name=MODEL_NAME,
         embedding_dim=embedding_dim,
@@ -73,7 +81,7 @@ def info():
 @app.post("/embed", response_model=EmbedResponse)
 def embed(request: EmbedRequest):
     if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+        raise HTTPException(status_code=503, detail="Model still loading")
     if not request.texts:
         return EmbedResponse(embeddings=[])
 
