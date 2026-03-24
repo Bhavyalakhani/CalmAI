@@ -52,10 +52,46 @@ class CalmAIEmbeddings(Embeddings):
                 "USE_EMBEDDING_SERVICE is true but EMBEDDING_SERVICE_URL is not set"
             )
 
+        # detect Vertex AI endpoint vs plain HTTP
+        if "aiplatform.googleapis.com" in self.endpoint_url or self.endpoint_url.startswith("projects/"):
+            return self._call_vertex_ai(texts)
+
         url = self.endpoint_url.rstrip("/") + "/embed"
         response = requests.post(
             url,
             json={"texts": texts},
+            timeout=120,
+        )
+        response.raise_for_status()
+        return response.json()["embeddings"]
+
+    def _call_vertex_ai(self, texts: List[str]) -> List[List[float]]:
+        """call Vertex AI endpoint using raw HTTP with google-auth token."""
+        import json
+        import requests
+        import google.auth
+        import google.auth.transport.requests
+
+        credentials, project = google.auth.default()
+        auth_req = google.auth.transport.requests.Request()
+        credentials.refresh(auth_req)
+
+        # build the rawPredict URL
+        endpoint_name = self.endpoint_url
+        if "aiplatform.googleapis.com" in endpoint_name:
+            url = endpoint_name.rstrip("/") + ":rawPredict"
+        else:
+            # resource name like projects/.../endpoints/ENDPOINT_ID
+            region = endpoint_name.split("/locations/")[1].split("/")[0] if "/locations/" in endpoint_name else "us-central1"
+            url = f"https://{region}-aiplatform.googleapis.com/v1/{endpoint_name}:rawPredict"
+
+        response = requests.post(
+            url,
+            json={"texts": texts},
+            headers={
+                "Authorization": f"Bearer {credentials.token}",
+                "Content-Type": "application/json",
+            },
             timeout=120,
         )
         response.raise_for_status()

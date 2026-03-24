@@ -98,14 +98,28 @@ class EmbeddingClient:
         logger.info(f"Local embedding complete: {total} texts in {total_time:.2f}s")
         return result
 
+    @property
+    def _is_vertex_ai(self) -> bool:
+        """detect if the endpoint URL is a Vertex AI endpoint resource name."""
+        return (
+            "aiplatform.googleapis.com" in self.endpoint_url
+            or self.endpoint_url.startswith("projects/")
+        )
+
     def _call_endpoint(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
         """send texts to the remote embedding endpoint in batches."""
-        import requests
-
         if not self.endpoint_url:
             raise ValueError(
                 "USE_EMBEDDING_SERVICE is true but EMBEDDING_SERVICE_URL is not set"
             )
+
+        if self._is_vertex_ai:
+            return self._call_vertex_ai(texts, show_progress)
+        return self._call_http(texts, show_progress)
+
+    def _call_http(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
+        """send texts to a plain HTTP endpoint (e.g. Cloud Run)."""
+        import requests
 
         total = len(texts)
         num_batches = (total + self.batch_size - 1) // self.batch_size
@@ -136,4 +150,52 @@ class EmbeddingClient:
 
         total_time = time.time() - start
         logger.info(f"Remote embedding complete: {total} texts in {total_time:.2f}s")
+        return result
+
+    def _call_vertex_ai(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
+        """send texts to a Vertex AI Online Prediction Endpoint via the SDK.
+        uses raw_predict which passes the request body as-is to the container
+        at the predict route (/embed). auth is handled automatically via
+        GOOGLE_APPLICATION_CREDENTIALS or the default service account.
+        """
+        import json
+        from google.cloud import aiplatform
+
+        # accept either a full resource name or an API URL
+        endpoint_name = self.endpoint_url
+        if "aiplatform.googleapis.com" in endpoint_name:
+            # extract resource name from URL like:
+            # https://REGION-aiplatform.googleapis.com/v1/projects/.../endpoints/ENDPOINT_ID
+            parts = endpoint_name.split("/v1/")[-1] if "/v1/" in endpoint_name else endpoint_name
+            endpoint_name = parts
+
+        endpoint = aiplatform.Endpoint(endpoint_name=endpoint_name)
+
+        total = len(texts)
+        num_batches = (total + self.batch_size - 1) // self.batch_size
+        result = np.empty((total, self.embedding_dim), dtype=np.float32)
+        start = time.time()
+
+        for i in range(0, total, self.batch_size):
+            batch = texts[i : i + self.batch_size]  # noqa: E203
+            batch_num = (i // self.batch_size) + 1
+
+            response = endpoint.raw_predict(
+                body=json.dumps({"texts": batch}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            data = json.loads(response.text)
+            embeddings = np.array(data["embeddings"], dtype=np.float32)
+            result[i : i + len(batch)] = embeddings  # noqa: E203
+
+            if show_progress and (batch_num % 10 == 0 or batch_num == num_batches):
+                elapsed = time.time() - start
+                rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
+                logger.info(
+                    f"  Vertex AI embed {batch_num}/{num_batches} | "
+                    f"{i + len(batch)}/{total} texts | {rate:.0f} texts/sec"
+                )
+
+        total_time = time.time() - start
+        logger.info(f"Vertex AI embedding complete: {total} texts in {total_time:.2f}s")
         return result

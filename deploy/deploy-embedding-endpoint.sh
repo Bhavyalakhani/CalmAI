@@ -100,7 +100,12 @@ case "${ACTION}" in
 
     echo "=== Embedding endpoint deployed ==="
     echo "Endpoint ID: ${ENDPOINT_ID}"
-    echo "Set EMBEDDING_SERVICE_URL to the endpoint's predict URL"
+    echo ""
+    echo "Set these env vars on your VM and backend:"
+    echo "  USE_EMBEDDING_SERVICE=true"
+    echo "  EMBEDDING_SERVICE_URL=${ENDPOINT_ID}"
+    echo "  EMBEDDING_DIM=4096"
+    echo ""
     echo "IMPORTANT: Run '$0 down' when done testing to stop GPU billing (~\$0.90/hr)"
     ;;
 
