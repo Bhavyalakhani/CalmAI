@@ -60,6 +60,13 @@ class TopicModelInference:
 
         try:
             self.model = BERTopic.load(str(model_dir))
+            # if the model was trained with USE_EMBEDDING_SERVICE, the saved
+            # embedding_model may be None. patch it so any internal BERTopic
+            # calls (KeyBERT repr, _extract_embeddings) still work.
+            if self.model.embedding_model is None:
+                from embedding.embedding_client import EmbeddingClient
+                from topic_modeling.trainer import _BERTopicEmbeddingWrapper
+                self.model.embedding_model = _BERTopicEmbeddingWrapper(EmbeddingClient())
             self._loaded = True
             logger.info(f"Loaded {self.model_type} topic model from {model_dir}")
             return True

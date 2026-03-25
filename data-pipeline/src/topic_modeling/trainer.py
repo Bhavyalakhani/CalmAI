@@ -33,6 +33,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+class _BERTopicEmbeddingWrapper:
+    """wraps EmbeddingClient to satisfy BERTopic's embedding_model interface.
+    BERTopic (and KeyBERT representation) calls embed_documents() and embed()
+    on the embedding model internally for representative doc extraction."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def embed_documents(self, documents, verbose=False):
+        return self._client.embed(documents, show_progress=verbose)
+
+    def embed(self, documents, verbose=False):
+        return self._client.embed(documents, show_progress=verbose)
+
+
 class TopicModelTrainer:
     """trains bertopic models with multi-aspect gemini llm labeling"""
 
@@ -204,10 +219,10 @@ class TopicModelTrainer:
     def _build_bertopic(self):
         """assemble the full bertopic model from components.
 
-        when USE_EMBEDDING_SERVICE is true, embedding_model is set to None
-        because all embeddings are pre-computed via the remote endpoint.
-        BERTopic will skip its internal embedding step when embeddings are
-        passed to fit_transform() / transform().
+        when USE_EMBEDDING_SERVICE is true, wraps EmbeddingClient in a
+        BERTopic-compatible interface so that KeyBERT representation and
+        other internal embedding calls still work. pre-computed embeddings
+        are still passed to fit_transform() for the main step.
         """
         from bertopic import BERTopic
 
@@ -218,7 +233,10 @@ class TopicModelTrainer:
 
         settings = config.settings
         if settings.USE_EMBEDDING_SERVICE:
-            embedding_model = None
+            from embedding.embedding_client import EmbeddingClient
+            embedding_model = _BERTopicEmbeddingWrapper(
+                EmbeddingClient(model_name=self.config.embedding_model_name)
+            )
         else:
             from sentence_transformers import SentenceTransformer
             embedding_model = SentenceTransformer(self.config.embedding_model_name)
@@ -245,7 +263,6 @@ class TopicModelTrainer:
         logger.info(f"Pre-calculating embeddings for {len(docs)} documents...")
         client = EmbeddingClient(
             model_name=self.config.embedding_model_name,
-            batch_size=64,
         )
         embeddings = client.embed(docs)
         logger.info(f"Embeddings shape: {embeddings.shape}")
