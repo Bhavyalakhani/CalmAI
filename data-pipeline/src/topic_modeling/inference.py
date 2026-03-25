@@ -67,14 +67,17 @@ class TopicModelInference:
             return False
 
         try:
-            self.model = BERTopic.load(str(model_dir))
-            # if the model was trained with USE_EMBEDDING_SERVICE, the saved
-            # embedding_model may be None. patch it so any internal BERTopic
-            # calls (KeyBERT repr, _extract_embeddings) still work.
-            if self.model.embedding_model is None:
+            # when using the remote embedding service, pass our wrapper as
+            # embedding_model to prevent BERTopic from loading the full Qwen 8B
+            # model locally on CPU (which wastes ~3 min and ~16GB RAM each time)
+            settings = config.settings
+            if settings.USE_EMBEDDING_SERVICE:
                 from embedding.embedding_client import EmbeddingClient
                 from topic_modeling.trainer import _make_embedding_wrapper
-                self.model.embedding_model = _make_embedding_wrapper(EmbeddingClient())
+                wrapper = _make_embedding_wrapper(EmbeddingClient())
+                self.model = BERTopic.load(str(model_dir), embedding_model=wrapper)
+            else:
+                self.model = BERTopic.load(str(model_dir))
             self._loaded = True
             logger.info(f"Loaded {self.model_type} topic model from {model_dir}")
             return True

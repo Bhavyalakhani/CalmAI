@@ -550,7 +550,7 @@ class MongoDBClient:
 
         # severity classification via bertopic severity model (batch)
         try:
-            from src.severity import classify_severity_batch
+            from severity import classify_severity_batch
             severities = classify_severity_batch(contexts)
         except Exception as e:
             logger.warning(f"Severity model classification failed: {e}")
@@ -603,6 +603,121 @@ class MongoDBClient:
             "severity_updates": severity_updates,
             "modified": total_modified,
         }
+
+    def classify_and_update_journals(self) -> Dict[str, int]:
+        """classify all journals with bertopic topics and set the 'themes' field.
+        reads content from the journals collection, predicts topics using the
+        trained journal model, then bulk-updates each document's themes array
+        so the frontend displays topic labels instead of 'unclassified'."""
+        self.connect()
+
+        docs = list(self.journals.find({}, {"journal_id": 1, "content": 1}))
+        if not docs:
+            logger.info("No journals to classify")
+            return {"classified": 0, "theme_updates": 0}
+
+        logger.info(f"Classifying {len(docs)} journals...")
+        contents = [d.get("content", "") for d in docs]
+
+        try:
+            from topic_modeling.inference import TopicModelInference
+            inference = TopicModelInference(model_type="journals")
+            if not inference.load():
+                raise RuntimeError("Journal BERTopic model not available")
+
+            topics, _ = inference.predict(contents)
+            topic_labels = [inference.get_topic_label(int(t)) for t in topics]
+        except Exception as e:
+            logger.error(f"Journal topic classification failed: {e}")
+            raise
+
+        theme_updates = 0
+        from pymongo import UpdateOne
+        operations = []
+
+        for doc, topic_id, topic_label in zip(docs, topics, topic_labels):
+            jid = doc["journal_id"]
+            topic_id_int = int(topic_id)
+
+            if topic_id_int != -1 and topic_label:
+                themes = [topic_label]
+            else:
+                themes = ["Other"]
+            theme_updates += 1
+
+            operations.append(
+                UpdateOne(
+                    {"journal_id": jid},
+                    {"$set": {"themes": themes}},
+                )
+            )
+
+        total_modified = 0
+        for i in range(0, len(operations), BATCH_SIZE):
+            batch = operations[i:i + BATCH_SIZE]
+            result = self.journals.bulk_write(batch, ordered=False)
+            total_modified += result.modified_count
+
+        logger.info(
+            f"Classified {len(docs)} journals: "
+            f"{theme_updates} theme updates, {total_modified} documents modified"
+        )
+
+        return {
+            "classified": len(docs),
+            "theme_updates": theme_updates,
+            "modified": total_modified,
+        }
+
+    def classify_journals_by_ids(self, journal_ids: list) -> Dict[str, int]:
+        """classify specific journals by their ids (used by dag 2 for incoming journals)."""
+        self.connect()
+
+        docs = list(self.journals.find(
+            {"journal_id": {"$in": journal_ids}},
+            {"journal_id": 1, "content": 1},
+        ))
+        if not docs:
+            return {"classified": 0, "theme_updates": 0}
+
+        logger.info(f"Classifying {len(docs)} incoming journals by id...")
+        contents = [d.get("content", "") for d in docs]
+
+        try:
+            from topic_modeling.inference import TopicModelInference
+            inference = TopicModelInference(model_type="journals")
+            if not inference.load():
+                raise RuntimeError("Journal BERTopic model not available")
+
+            topics, _ = inference.predict(contents)
+            topic_labels = [inference.get_topic_label(int(t)) for t in topics]
+        except Exception as e:
+            logger.error(f"Incoming journal classification failed: {e}")
+            raise
+
+        from pymongo import UpdateOne
+        operations = []
+        theme_updates = 0
+
+        for doc, topic_id, topic_label in zip(docs, topics, topic_labels):
+            topic_id_int = int(topic_id)
+            themes = [topic_label] if (topic_id_int != -1 and topic_label) else ["Other"]
+            theme_updates += 1
+            operations.append(
+                UpdateOne(
+                    {"journal_id": doc["journal_id"]},
+                    {"$set": {"themes": themes}},
+                )
+            )
+
+        total_modified = 0
+        for i in range(0, len(operations), BATCH_SIZE):
+            batch = operations[i:i + BATCH_SIZE]
+            result = self.journals.bulk_write(batch, ordered=False)
+            total_modified += result.modified_count
+
+        logger.info(f"Classified {len(docs)} incoming journals: {total_modified} modified")
+        return {"classified": len(docs), "theme_updates": theme_updates, "modified": total_modified}
 
     def upsert_patient_analytics(self, patient_id: str, analytics: Dict[str, Any]):
         """upsert analytics data for a patient (topic dist, mood trends, etc.)"""

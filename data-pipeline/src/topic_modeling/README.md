@@ -83,11 +83,11 @@ All topic classification flows through the trained models — there are no keywo
 | `__init__.py` | 2 | Module docstring |
 | `config.py` | 163 | `TopicModelConfig` dataclass, `HyperparameterSpace`, `SeverityHyperparameterSpace`, Gemini prompt templates (including `SEVERITY_LABEL_PROMPT`), path helpers |
 | `trainer.py` | 615 | `TopicModelTrainer` — builds UMAP/HDBSCAN/BERTopic pipeline, trains models (journals, conversations, severity), hyperparameter tuning, model saving |
-| `inference.py` | 314 | `TopicModelInference` — loads saved models, predict topics, severity prediction (`predict_severity`, `predict_severity_series`), labels/keywords/distributions |
+| `inference.py` | 314 | `TopicModelInference` — loads saved models (with staging-to-latest fallback on first run, passes `embedding_model` wrapper to `BERTopic.load()` when using remote embedding service), predict topics, severity prediction (`predict_severity`, `predict_severity_series`), labels/keywords/distributions |
 | `validation.py` | 263 | `TopicModelValidator` — quality metrics (diversity, coherence, outlier ratio, Gini), pass/fail checks |
 | `bias_analysis.py` | 575 | `TopicBiasAnalyzer` — topic distribution balance, severity analysis (BERTopic-based), underrepresentation, patient coverage, temporal patterns |
 | `selection_policy.py` | ~120 | `SelectionPolicy` — hard gates (outlier ratio, silhouette, diversity, bias disparity) + weighted composite scoring for promotion decisions |
-| `rollback.py` | ~150 | `ModelRollback` — automatic rollback on smoke test failure, manual rollback, `smoke_test_model()` for post-promotion verification |
+| `rollback.py` | ~150 | `ModelRollback` — automatic rollback on smoke test failure, manual rollback, `smoke_test_model()` for post-promotion verification (passes `embedding_model` wrapper when using remote service) |
 | `experiment_tracker.py` | 434 | `ExperimentTracker` — MLflow experiment tracking (metrics, params, artifacts) + Vertex AI Model Registry (cloud-native model versioning when `GCP_PROJECT_ID` is set) |
 
 ## Training Pipeline
@@ -275,14 +275,20 @@ Models are saved locally using BERTopic's safetensors serialization, uploaded to
 ```
 data-pipeline/models/
 ├── bertopic_journals/
+│   ├── staging/
+│   │   └── model/          # candidate model (pre-promotion)
 │   └── latest/
-│       └── model/          # safetensors artifacts
+│       └── model/          # promoted safetensors artifacts
 ├── bertopic_conversations/
+│   ├── staging/
+│   │   └── model/
 │   └── latest/
-│       └── model/          # safetensors artifacts
+│       └── model/
 └── bertopic_severity/
+    ├── staging/
+    │   └── model/
     └── latest/
-        └── model/          # safetensors artifacts
+        └── model/
 ```
 
 ### GCS Versioned Storage
@@ -305,7 +311,7 @@ gs://calm-ai_model_registry/models/bertopic/
 - **Rejected**: fails a gate or scores lower → `rejected/` only (kept for audit)
 - GCS authentication: `gcs.Client.from_service_account_json(key_file)` — key file path from `GCS_KEY_FILE` config
 
-Model loading is a single call: `TopicModelInference(model_type="journals").load()`.
+Model loading is a single call: `TopicModelInference(model_type="journals").load()`. On first pipeline run (before promotion), `load()` falls back to `staging/` when `latest/` doesn't exist. When `USE_EMBEDDING_SERVICE=true`, `load()` passes an `embedding_model` wrapper to `BERTopic.load()` to prevent loading the full Qwen 8B model locally on CPU.
 
 ## Configuration
 
@@ -340,8 +346,8 @@ Environment variables (loaded via `configs/config.py`):
 | **DAG 1** (batch pipeline) | `trainer.py` | `train_journal_model`, `train_conversation_model`, and `train_severity_model` tasks |
 | **DAG 1** (bias analysis) | `inference.py` | `journal_bias.py` and `conversation_bias.py` classify topics; severity model used by `bias_analysis.py` |
 | **DAG 1** (patient analytics) | `inference.py` | `compute_patient_analytics` task uses journal model for topic distribution |
-| **DAG 1** (MongoDB storage) | `inference.py` | `store_to_mongodb` task calls `classify_and_update_conversations()` to assign topic + severity to conversations |
-| **DAG 2** (incoming journals) | `inference.py` | `update_analytics` task reclassifies patient topics |
+| **DAG 1** (MongoDB storage) | `inference.py` | `store_to_mongodb` task calls `classify_and_update_conversations()` for topic + severity, and `classify_and_update_journals()` to set `themes` field |
+| **DAG 2** (incoming journals) | `inference.py` | `store_to_mongodb` classifies incoming journals with themes; `update_analytics` reclassifies patient topics |
 | **Backend** (journals router) | `inference.py` | Real-time theme classification for new journal entries |
 | **Severity wrapper** | `severity.py` | Singleton wrapper around `TopicModelInference(model_type="severity")` for `mongodb_client`, `conversation_bias`, `bias_analysis` |
 | **Validation** (DAG 1) | `validation.py` | Quality checks after training |

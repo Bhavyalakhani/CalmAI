@@ -287,7 +287,12 @@ def run():
                 logger.warning(f"  {model_type}: staged model not found at {model_path} — skipping")
                 continue
             try:
-                model = BERTopic.load(str(model_path))
+                if settings.USE_EMBEDDING_SERVICE:
+                    from src.embedding.embedding_client import EmbeddingClient
+                    from src.topic_modeling.trainer import _make_embedding_wrapper
+                    model = BERTopic.load(str(model_path), embedding_model=_make_embedding_wrapper(EmbeddingClient()))
+                else:
+                    model = BERTopic.load(str(model_path))
                 df = pd.read_parquet(data_path)
 
                 if temporal and date_col and date_col in df.columns:

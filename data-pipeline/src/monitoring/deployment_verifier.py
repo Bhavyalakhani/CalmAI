@@ -59,8 +59,17 @@ def verify_deployed_model(
     # check 1: model loads
     try:
         from bertopic import BERTopic
+        import sys as _sys
+        from pathlib import Path as _Path
+        _sys.path.insert(0, str(_Path(__file__).parent.parent.parent / "configs"))
+        import config as _config
         t0 = time.time()
-        model = BERTopic.load(model_dir)
+        if _config.settings.USE_EMBEDDING_SERVICE:
+            from embedding.embedding_client import EmbeddingClient
+            from topic_modeling.trainer import _make_embedding_wrapper
+            model = BERTopic.load(model_dir, embedding_model=_make_embedding_wrapper(EmbeddingClient()))
+        else:
+            model = BERTopic.load(model_dir)
         load_time_ms = (time.time() - t0) * 1000
         report["checks"]["load"] = {
             "passed": True,

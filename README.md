@@ -44,8 +44,9 @@ Backend writes to incoming_journals (staging)
         ▼
 Airflow DAG 2 (every 12 hours)
 ├── Preprocess & validate entry
-├── Generate embeddings (384-dim)
+├── Generate embeddings (configurable dims via EMBEDDING_DIM)
 ├── Store in rag_vectors + journals
+├── Classify journals with BERTopic topics (sets themes field)
 ├── Recompute patient analytics via BERTopic
 │   ├── Topic distribution (% per topic)
 │   ├── Topics over time (monthly trends)

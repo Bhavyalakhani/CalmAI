@@ -405,7 +405,13 @@ def validate_candidates_callable(**context):
 
             try:
                 from bertopic import BERTopic
-                model = BERTopic.load(model_path)
+                import config as _cfg
+                if _cfg.settings.USE_EMBEDDING_SERVICE:
+                    from embedding.embedding_client import EmbeddingClient
+                    from topic_modeling.trainer import _make_embedding_wrapper
+                    model = BERTopic.load(model_path, embedding_model=_make_embedding_wrapper(EmbeddingClient()))
+                else:
+                    model = BERTopic.load(model_path)
 
                 # load the data used for training
                 if model_type == "journals":
@@ -887,6 +893,14 @@ def store_to_mongodb_callable(**context):
                 ti.xcom_push(key="classify_result", value=classify_result)
             except Exception as ce:
                 logger.warning(f"Conversation classification failed (non-fatal): {ce}")
+
+            # classify journals with bertopic topics (sets themes field)
+            try:
+                journal_classify = client.classify_and_update_journals()
+                logger.info(f"Journal classification: {journal_classify}")
+                ti.xcom_push(key="journal_classify_result", value=journal_classify)
+            except Exception as je:
+                logger.warning(f"Journal classification failed (non-fatal): {je}")
 
             stats = client.get_collection_stats()
 

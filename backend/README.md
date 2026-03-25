@@ -180,11 +180,12 @@ Code config: `INVITE_CODE_LENGTH = 8`, `INVITE_CODE_EXPIRY_DAYS = 7`, max 10 col
 2. Backend writes to `incoming_journals` collection with `is_processed=False`
 3. Airflow DAG 2 (every 12 hours) picks up unprocessed entries
 4. DAG 2 preprocesses, validates, embeds, stores to `rag_vectors` + `journals`
-5. DAG 2 updates `patient_analytics` and marks entries as processed
+5. DAG 2 classifies journals with BERTopic topics (sets `themes` field)
+6. DAG 2 updates `patient_analytics` and marks entries as processed
 
 ## Topic Classification (BERTopic)
 
-The journals router (`routers/journals.py`) lazy-loads `TopicModelInference(model_type="journals")` from the data-pipeline's `src/topic_modeling/` module. When a patient fetches journals, each entry is classified with BERTopic-discovered topics. If the model is unavailable (not trained yet or import error), entries are returned as "unclassified".
+Journal topics are primarily set by the data pipeline's `store_to_mongodb` task, which classifies all journals with BERTopic and stores the `themes` field. The journals router (`routers/journals.py`) has a real-time fallback: if `themes` is missing (e.g., before DAG runs), it lazy-loads `TopicModelInference(model_type="journals")` from the data-pipeline's `src/topic_modeling/` module and classifies on the fly. If the model is unavailable (not trained yet or import error), entries are returned as "unclassified".
 
 ## Patient Analytics Schema
 

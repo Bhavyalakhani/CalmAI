@@ -33,7 +33,8 @@ CalmAI is a **B2B SaaS platform for licensed therapists** - not a patient-facing
 3. **Validates** schema integrity with expectation-based checks and a validation gate that halts the pipeline on failure
 4. **Detects bias** across topics, severity levels, themes, and temporal patterns with visualizations
 5. **Embeds** all text via a unified `EmbeddingClient` — `all-MiniLM-L6-v2` (384 dims) locally or Qwen 8B (4096 dims) via a remote Vertex AI endpoint in production
-6. **Stores** everything in MongoDB Atlas with a unified `rag_vectors` collection for vector search
+6. **Classifies** journals with BERTopic topics and sets the `themes` field so the frontend displays topic labels
+7. **Stores** everything in MongoDB Atlas with a unified `rag_vectors` collection for vector search
 
 All clinical judgment stays with human therapists - the system surfaces information but never makes diagnoses or treatment recommendations.
 
@@ -175,7 +176,7 @@ SMTP_MAIL_FROM=your-email@gmail.com
    - **Index name**: `vector_index`
    - **Collection**: `rag_vectors`
    - **Field**: `embedding`
-   - **Dimensions**: 384 (dev) or 4096 (prod with Qwen)
+   - **Dimensions**: 384 (dev) or 4096 (prod with Qwen) — configurable via `EMBEDDING_DIM` env var
    - **Similarity**: cosine
    - **Filter fields**: `patient_id`, `doc_type`
 
@@ -274,7 +275,7 @@ Runs all 14 pipeline steps sequentially with timing:
 | 9 | Train journal topic model (BERTopic) |
 | 10 | Train conversation topic model (BERTopic) |
 | 11 | Train severity model (BERTopic) |
-| 12 | Store to MongoDB (+ classify conversations with topics & severity) |
+| 12 | Store to MongoDB (+ classify conversations with topics & severity + classify journals with themes) |
 | 13 | Compute patient analytics (per-patient topic distribution) |
 | 14 | Model lifecycle — holdout validation, bias gate, selection policy, smoke test |
 | 15 | GCS upload — promoted models to `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`, rejected to `rejected/v_YYYYMMDD_HHMMSS/` |
@@ -284,7 +285,18 @@ At the end, a summary table shows duration per step and the total runtime.
 
 #### Incoming Pipeline (`run_incoming_pipeline.py`)
 
-Mirrors Airflow DAG 2 locally. Fetches unprocessed journals from `incoming_journals`, preprocesses, validates, embeds, stores to MongoDB, conditionally retrains BERTopic models, updates per-patient analytics, and marks entries as processed. Supports seeding test entries for development and a `--verify-only` mode to inspect current DB state without processing.
+Mirrors Airflow DAG 2 locally. Fetches unprocessed journals from `incoming_journals`, preprocesses, validates, embeds, stores to MongoDB (with BERTopic theme classification), conditionally retrains BERTopic models, updates per-patient analytics, and marks entries as processed. Supports seeding test entries for development and a `--verify-only` mode to inspect current DB state without processing.
+
+#### Testing Conditional Retrain (`seed_for_retrain.py`)
+
+Standalone script for testing DAG 2's conditional retrain via the Airflow UI. Seeds `incoming_journals` with test data and optionally backdates training metadata to trigger retrain thresholds.
+
+```bash
+python seed_for_retrain.py                     # seed 60 entries (hits 50-entry threshold)
+python seed_for_retrain.py --count 10          # seed 10 entries only
+python seed_for_retrain.py --force-retrain     # backdate training metadata (triggers 7-day threshold)
+python seed_for_retrain.py --status            # show current DB state and retrain eligibility
+```
 
 ---
 
@@ -335,7 +347,7 @@ data-pipeline/
 │   │   ├── config.py                # TopicModelConfig — shared BERTopic + MLflow settings
 │   │   ├── experiment_tracker.py    # ExperimentTracker — MLflow tracking + Vertex AI Registry
 │   │   ├── trainer.py               # TopicModelTrainer — BERTopic training with Gemini LLM labeling
-│   │   ├── inference.py             # TopicModelInference — topic prediction from saved models
+│   │   ├── inference.py             # TopicModelInference — topic prediction (staging fallback, embedding_model wrapper for remote service)
 │   │   ├── validation.py            # TopicModelValidator — clustering metrics, holdout evaluation
 │   │   ├── selection_policy.py      # SelectionPolicy — hard gates + weighted scoring for promotion
 │   │   ├── rollback.py              # ModelRollback — automatic/manual rollback + smoke tests
@@ -421,9 +433,9 @@ data-pipeline/
 | `conversation_bias.py` | Uses `TopicModelInference(model_type="conversations")` (model required). Classifies conversations into topics and 4 severity levels via BERTopic severity model. Flags underrepresented topics (<3%). Analyzes response length by topic. Generates visualizations. |
 | `journal_bias.py` | Uses `TopicModelInference(model_type="journals")` (model required). Classifies journals into topics. Analyzes temporal patterns (entries by day/month), patient distribution, and sparse patients (<10 entries). Generates visualizations. |
 | `severity.py` | BERTopic severity singleton wrapper. Lazy-loads `TopicModelInference(model_type="severity")` once, exposes `classify_severity()`, `classify_severity_batch()`, `classify_severity_series()`. Returns `"unknown"` when model is unavailable. Used by `mongodb_client`, `conversation_bias`, and `bias_analysis`. |
-| `embedding_client.py` | Unified `EmbeddingClient` — when `USE_EMBEDDING_SERVICE=true`, sends texts to a remote Vertex AI endpoint via HTTP POST; otherwise loads a local SentenceTransformer. Batched (64 texts), pre-allocated numpy output. |
+| `embedding_client.py` | Unified `EmbeddingClient` — when `USE_EMBEDDING_SERVICE=true`, sends texts to a remote Vertex AI endpoint via HTTP POST; otherwise loads a local SentenceTransformer. Batched (4 texts per request for GPU OOM prevention), pre-allocated numpy output, retry logic with exponential backoff. |
 | `embedder.py` | `EmbeddingService` — uses `EmbeddingClient` to generate embeddings in batches. Separate functions for conversations, journals, and incoming journals. |
-| `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Logs pipeline runs to `pipeline_metadata`. |
+| `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Classifies conversations with topics+severity and journals with themes via BERTopic. Logs pipeline runs to `pipeline_metadata`. |
 | `patient_analytics.py` | Per-patient topic classification using `TopicModelInference(model_type="journals")`. Returns "unclassified" when model unavailable. Computes topic distribution, topics over time, representative entries, and frequency analytics. |
 | `topic_modeling/` | BERTopic topic modeling module (9 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification. `TopicModelValidator` checks quality metrics and holdout validation. `SelectionPolicy` enforces hard gates + weighted scoring for promotion. `ModelRollback` + `smoke_test_model` handle post-promotion verification and automatic rollback. `ExperimentTracker` wraps MLflow for experiment tracking and Vertex AI for model registry. `TopicBiasAnalyzer` detects bias using BERTopic topics. Models saved locally to `models/bertopic_{type}/latest/model` (safetensors), uploaded to GCS, and registered in Vertex AI Model Registry. Full lifecycle: train → holdout validation (80/20 split) → bias gate → selection policy → smoke test → GCS upload → Vertex AI registration. |
 | `success_email.py` | Sends HTML email with task duration table, MongoDB collection stats, and pipeline summary on successful completion. |

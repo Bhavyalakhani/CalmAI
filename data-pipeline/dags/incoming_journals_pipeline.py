@@ -180,8 +180,18 @@ def store_to_mongodb_callable(**context):
         client.connect()
         result = client.insert_incoming_journals(df)
         ti.xcom_push(key="insert_result", value=result)
-        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
         logger.info(f"Stored incoming journals: {result}")
+
+        # classify the newly inserted journals with bertopic topics (sets themes)
+        try:
+            journal_ids = df["journal_id"].tolist() if "journal_id" in df.columns else []
+            if journal_ids:
+                classify_result = client.classify_journals_by_ids(journal_ids)
+                logger.info(f"Classified incoming journals: {classify_result}")
+        except Exception as ce:
+            logger.warning(f"Incoming journal classification failed (non-fatal): {ce}")
+
+        ti.xcom_push(key="duration", value=round(time.time() - t0, 2))
     finally:
         client.close()
 
@@ -359,7 +369,14 @@ def conditional_retrain_callable(**context):
             bias_result = None
             try:
                 from bertopic import BERTopic
-                model = BERTopic.load(str(model_path))
+                import config as _cfg
+                if _cfg.settings.USE_EMBEDDING_SERVICE:
+                    from embedding.embedding_client import EmbeddingClient
+                    from topic_modeling.trainer import _make_embedding_wrapper
+                    _wrapper = _make_embedding_wrapper(EmbeddingClient())
+                    model = BERTopic.load(str(model_path), embedding_model=_wrapper)
+                else:
+                    model = BERTopic.load(str(model_path))
 
                 # split data 80/20 (temporal for journals, random for others)
                 if model_type == "journals" and "entry_date" in df.columns:
@@ -375,8 +392,12 @@ def conditional_retrain_callable(**context):
                     holdout_df = df.iloc[holdout_indices].reset_index(drop=True)
                     holdout_docs = [docs[i] for i in holdout_indices]
 
+                # pre-embed holdout docs once — reused for validation, comparison, and bias gate
+                from embedding.embedding_client import EmbeddingClient as _EC
+                _holdout_embeddings = _EC().embed(holdout_docs, show_progress=False)
+
                 # holdout validation on candidate
-                holdout_report = validator.validate_holdout(model, holdout_docs)
+                holdout_report = validator.validate_holdout(model, holdout_docs, _holdout_embeddings)
                 holdout_report["model_type"] = model_type
                 validator.save_report(holdout_report, f"{model_type}_retrain_holdout.json")
 
@@ -385,8 +406,11 @@ def conditional_retrain_callable(**context):
                 latest_model_path = latest_dir / "model"
                 if latest_model_path.exists():
                     try:
-                        active_model = BERTopic.load(str(latest_model_path))
-                        active_report = validator.validate_holdout(active_model, holdout_docs)
+                        if _cfg.settings.USE_EMBEDDING_SERVICE:
+                            active_model = BERTopic.load(str(latest_model_path), embedding_model=_wrapper)
+                        else:
+                            active_model = BERTopic.load(str(latest_model_path))
+                        active_report = validator.validate_holdout(active_model, holdout_docs, _holdout_embeddings)
                         active_report["model_type"] = f"{model_type}_active"
                         validator.save_report(active_report, f"{model_type}_active_holdout.json")
                         logger.info(
@@ -401,7 +425,7 @@ def conditional_retrain_callable(**context):
                 # bias gate
                 from bias_detection.holdout_bias_gate import HoldoutBiasGate
                 gate = HoldoutBiasGate()
-                holdout_topics, holdout_probs = model.transform(holdout_docs)
+                holdout_topics, holdout_probs = model.transform(holdout_docs, _holdout_embeddings)
                 bias_result = gate.evaluate(
                     holdout_df=holdout_df,
                     candidate_topics=list(holdout_topics),

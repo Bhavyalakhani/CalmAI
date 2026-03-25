@@ -579,7 +579,13 @@ def run(args):
                     bias_result = None
                     try:
                         from bertopic import BERTopic
-                        model = BERTopic.load(str(model_path))
+                        if settings.USE_EMBEDDING_SERVICE:
+                            from src.embedding.embedding_client import EmbeddingClient
+                            from src.topic_modeling.trainer import _make_embedding_wrapper
+                            _wrapper = _make_embedding_wrapper(EmbeddingClient())
+                            model = BERTopic.load(str(model_path), embedding_model=_wrapper)
+                        else:
+                            model = BERTopic.load(str(model_path))
 
                         # split data 80/20 (temporal for journals, random for others)
                         if model_type == "journals" and "entry_date" in df.columns:
@@ -595,15 +601,19 @@ def run(args):
                             holdout_df = df.iloc[holdout_indices].reset_index(drop=True)
                             holdout_docs = [docs[i] for i in holdout_indices]
 
+                        # pre-embed holdout docs once
+                        from src.embedding.embedding_client import EmbeddingClient as _EC
+                        _holdout_emb = _EC().embed(holdout_docs, show_progress=False)
+
                         # holdout validation
-                        holdout_report = validator.validate_holdout(model, holdout_docs)
+                        holdout_report = validator.validate_holdout(model, holdout_docs, _holdout_emb)
                         holdout_report["model_type"] = model_type
                         validator.save_report(holdout_report, f"{model_type}_retrain_holdout.json")
 
                         # bias gate
                         from bias_detection.holdout_bias_gate import HoldoutBiasGate
                         gate = HoldoutBiasGate()
-                        holdout_topics, holdout_probs = model.transform(holdout_docs)
+                        holdout_topics, holdout_probs = model.transform(holdout_docs, _holdout_emb)
                         bias_result = gate.evaluate(
                             holdout_df=holdout_df,
                             candidate_topics=list(holdout_topics),

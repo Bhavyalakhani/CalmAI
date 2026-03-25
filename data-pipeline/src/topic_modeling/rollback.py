@@ -27,7 +27,16 @@ def smoke_test_model(model_name: str, model_path: str, sample_docs: list) -> Dic
 
     try:
         from bertopic import BERTopic
-        model = BERTopic.load(model_path)
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
+        import config as _config
+        if _config.settings.USE_EMBEDDING_SERVICE:
+            from embedding.embedding_client import EmbeddingClient
+            from topic_modeling.trainer import _make_embedding_wrapper
+            model = BERTopic.load(model_path, embedding_model=_make_embedding_wrapper(EmbeddingClient()))
+        else:
+            model = BERTopic.load(model_path)
     except Exception as e:
         logger.error(f"Smoke test FAILED — model load error: {e}")
         return {"passed": False, "error": f"load_failed: {e}"}
