@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "2"))
 
 app = FastAPI(title="CalmAI Embedding Server")
 

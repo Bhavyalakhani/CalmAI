@@ -23,7 +23,7 @@ class EmbeddingClient:
     endpoint via HTTP POST. otherwise, loads a local SentenceTransformer.
     """
 
-    def __init__(self, model_name: Optional[str] = None, batch_size: int = 16):
+    def __init__(self, model_name: Optional[str] = None, batch_size: int = 4):
         self.settings = config.settings
         # use getattr with defaults so mocked settings (MagicMock) don't accidentally
         # enable the remote endpoint — MagicMock attrs are truthy
@@ -157,6 +157,8 @@ class EmbeddingClient:
         uses raw_predict which passes the request body as-is to the container
         at the predict route (/embed). auth is handled automatically via
         GOOGLE_APPLICATION_CREDENTIALS or the default service account.
+        retries failed batches up to 3 times with exponential backoff (handles
+        transient OOM crashes where the container auto-restarts).
         """
         import json
         from google.cloud import aiplatform
@@ -175,18 +177,39 @@ class EmbeddingClient:
         num_batches = (total + self.batch_size - 1) // self.batch_size
         result = np.empty((total, self.embedding_dim), dtype=np.float32)
         start = time.time()
+        max_retries = 3
 
         for i in range(0, total, self.batch_size):
             batch = texts[i : i + self.batch_size]  # noqa: E203
             batch_num = (i // self.batch_size) + 1
 
-            response = endpoint.raw_predict(
-                body=json.dumps({"texts": batch}).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-            )
-            data = json.loads(response.text)
-            embeddings = np.array(data["embeddings"], dtype=np.float32)
-            result[i : i + len(batch)] = embeddings  # noqa: E203
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = endpoint.raw_predict(
+                        body=json.dumps({"texts": batch}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    if not response.text:
+                        raise RuntimeError(
+                            f"Empty response (batch {batch_num}/{num_batches}, "
+                            f"{len(batch)} texts, max len={max(len(t) for t in batch)} chars)"
+                        )
+                    data = json.loads(response.text)
+                    embeddings = np.array(data["embeddings"], dtype=np.float32)
+                    result[i : i + len(batch)] = embeddings  # noqa: E203
+                    break  # success
+                except Exception as e:
+                    if attempt < max_retries:
+                        wait = 30 * attempt  # 30s, 60s, 90s
+                        logger.warning(
+                            f"Batch {batch_num}/{num_batches} failed (attempt {attempt}/{max_retries}): {e}. "
+                            f"Retrying in {wait}s (endpoint may be restarting)..."
+                        )
+                        time.sleep(wait)
+                    else:
+                        raise RuntimeError(
+                            f"Batch {batch_num}/{num_batches} failed after {max_retries} attempts: {e}"
+                        ) from e
 
             if show_progress and (batch_num % 10 == 0 or batch_num == num_batches):
                 elapsed = time.time() - start

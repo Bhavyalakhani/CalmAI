@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
 
-    def __init__(self, model_name: Optional[str] = None, batch_size: int = 16):
+    def __init__(self, model_name: Optional[str] = None, batch_size: int = 4):
         self.settings = config.settings
         self.model_name = model_name or self.settings.EMBEDDING_MODEL
         self.batch_size = batch_size
@@ -98,7 +98,7 @@ def embed_conversations(
     input_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
     model_name: Optional[str] = None,
-    batch_size: int = 16,
+    batch_size: int = 4,
     skip_existing: bool = True,
     force: bool = False,
 ) -> Path:
@@ -142,7 +142,7 @@ def embed_journals(
     input_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
     model_name: Optional[str] = None,
-    batch_size: int = 16,
+    batch_size: int = 4,
     skip_existing: bool = True,
     force: bool = False,
 ) -> Path:
@@ -235,7 +235,7 @@ def _preprocess_journal_df(df: pd.DataFrame) -> pd.DataFrame:
 def embed_incoming_journals(
     journals,
     model_name: Optional[str] = None,
-    batch_size: int = 16,
+    batch_size: int = 4,
 ) -> pd.DataFrame:
     if isinstance(journals, list):
         df = pd.DataFrame(journals)
