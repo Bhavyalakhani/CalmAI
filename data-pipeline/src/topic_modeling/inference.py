@@ -54,6 +54,14 @@ class TopicModelInference:
 
         model_dir = path or (get_models_dir(self.model_type) / "model")
 
+        # fall back to staging if latest doesn't exist (first pipeline run)
+        if not model_dir.exists() and path is None:
+            from .config import get_staging_dir
+            staging_dir = get_staging_dir(self.model_type) / "model"
+            if staging_dir.exists():
+                logger.info(f"latest/ not found, falling back to staging: {staging_dir}")
+                model_dir = staging_dir
+
         if not model_dir.exists():
             logger.warning(f"Model not found at {model_dir}")
             return False
@@ -65,8 +73,8 @@ class TopicModelInference:
             # calls (KeyBERT repr, _extract_embeddings) still work.
             if self.model.embedding_model is None:
                 from embedding.embedding_client import EmbeddingClient
-                from topic_modeling.trainer import _BERTopicEmbeddingWrapper
-                self.model.embedding_model = _BERTopicEmbeddingWrapper(EmbeddingClient())
+                from topic_modeling.trainer import _make_embedding_wrapper
+                self.model.embedding_model = _make_embedding_wrapper(EmbeddingClient())
             self._loaded = True
             logger.info(f"Loaded {self.model_type} topic model from {model_dir}")
             return True

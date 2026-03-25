@@ -33,19 +33,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class _BERTopicEmbeddingWrapper:
-    """wraps EmbeddingClient to satisfy BERTopic's embedding_model interface.
-    BERTopic (and KeyBERT representation) calls embed_documents() and embed()
-    on the embedding model internally for representative doc extraction."""
+def _make_embedding_wrapper(client):
+    """create a BERTopic-compatible embedding wrapper around EmbeddingClient.
+    inherits from BaseEmbedder so select_backend() recognizes it and does NOT
+    fall back to loading a local SentenceTransformer."""
+    from bertopic.backend import BaseEmbedder
 
-    def __init__(self, client):
-        self._client = client
+    class _Wrapper(BaseEmbedder):
+        def __init__(self, c):
+            super().__init__()
+            self._client = c
+            self.embedding_model = c
 
-    def embed_documents(self, documents, verbose=False):
-        return self._client.embed(documents, show_progress=verbose)
+        def embed(self, documents, verbose=False):
+            return self._client.embed(documents, show_progress=verbose)
 
-    def embed(self, documents, verbose=False):
-        return self._client.embed(documents, show_progress=verbose)
+        def embed_documents(self, documents, verbose=False):
+            return self._client.embed(documents, show_progress=verbose)
+
+        def embed_words(self, words, verbose=False):
+            return self._client.embed(words, show_progress=verbose)
+
+    return _Wrapper(client)
 
 
 class TopicModelTrainer:
@@ -234,7 +243,7 @@ class TopicModelTrainer:
         settings = config.settings
         if settings.USE_EMBEDDING_SERVICE:
             from embedding.embedding_client import EmbeddingClient
-            embedding_model = _BERTopicEmbeddingWrapper(
+            embedding_model = _make_embedding_wrapper(
                 EmbeddingClient(model_name=self.config.embedding_model_name)
             )
         else:
