@@ -8,9 +8,12 @@ langchain
 langchain-google-genai
 datasets
 matplotlib
+scikit-learn>=1.3.0
 sentence-transformers>=3.0.0
 pymongo>=4.6.0
 dvc>=3.0
 dvc-gs
 bertopic>=0.17.0
+hdbscan>=0.8.33
 mlflow>=3.0.0
+google-cloud-aiplatform>=1.38.0

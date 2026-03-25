@@ -1,0 +1,147 @@
+# continuous deployment pipeline for CalmAI
+# builds and pushes Docker images for all components to Google Artifact Registry
+# 4 parallel jobs: data-pipeline (Airflow), frontend, backend, embedding-server
+#
+# currently set to manual-only (workflow_dispatch) to avoid GCP costs on every push.
+# to re-enable automatic deploys, uncomment the 'push' trigger below.
+#
+# prerequisites:
+#   1. GCP_PROJECT_ID, GCP_REGION, GCP_SA_KEY secrets set in GitHub repo settings
+#   2. Service account with roles: Cloud Build Editor, Artifact Registry Writer, Storage Admin
+#   3. Artifact Registry repo "calmai-docker" created (deploy.sh does this)
+
+name: Deploy
+
+on:
+  workflow_dispatch:  # manual trigger from GitHub Actions tab
+  # uncomment below to auto-deploy on push to main:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'data-pipeline/**'
+  #     - 'frontend/**'
+  #     - 'backend/**'
+  #     - 'deploy/**'
+  #     - '.github/workflows/deploy.yml'
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GCP_REGION: us-central1
+  REPO_NAME: calmai-docker
+
+jobs:
+  # shared auth setup anchor
+  deploy-pipeline:
+    name: Build Pipeline (Airflow)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push Airflow image
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow
+          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest data-pipeline/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+  deploy-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push frontend image
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-frontend
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.BACKEND_URL }} \
+            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
+            frontend/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+  deploy-backend:
+    name: Build Backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push backend image
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend
+          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest backend/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+  build-embedding-server:
+    name: Build Embedding Server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push embedding server image
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server
+          docker build \
+            --build-arg EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL }} \
+            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
+            -f data-pipeline/gpu/embedding_server/Dockerfile \
+            data-pipeline/gpu/embedding_server/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [deploy-pipeline, deploy-frontend, deploy-backend, build-embedding-server]
+    if: always()
+    steps:
+      - name: Post summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pipeline (Airflow) | ${{ needs.deploy-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Embedding Server | ${{ needs.build-embedding-server.result }} |" >> $GITHUB_STEP_SUMMARY

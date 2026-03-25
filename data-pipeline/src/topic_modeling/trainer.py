@@ -33,6 +33,30 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _make_embedding_wrapper(client):
+    """create a BERTopic-compatible embedding wrapper around EmbeddingClient.
+    inherits from BaseEmbedder so select_backend() recognizes it and does NOT
+    fall back to loading a local SentenceTransformer."""
+    from bertopic.backend import BaseEmbedder
+
+    class _Wrapper(BaseEmbedder):
+        def __init__(self, c):
+            super().__init__()
+            self._client = c
+            self.embedding_model = c
+
+        def embed(self, documents, verbose=False):
+            return self._client.embed(documents, show_progress=verbose)
+
+        def embed_documents(self, documents, verbose=False):
+            return self._client.embed(documents, show_progress=verbose)
+
+        def embed_words(self, words, verbose=False):
+            return self._client.embed(words, show_progress=verbose)
+
+    return _Wrapper(client)
+
+
 class TopicModelTrainer:
     """trains bertopic models with multi-aspect gemini llm labeling"""
 
@@ -43,6 +67,7 @@ class TopicModelTrainer:
         self.topics = None
         self.probs = None
         self.topic_info = None
+        self._saved_model_path: Optional[Path] = None
         self.tracker = ExperimentTracker(
             experiment_name=f"{self.config.model_type}_topic_model"
         )
@@ -201,16 +226,29 @@ class TopicModelTrainer:
         return RunnableLambda(_invoke)
 
     def _build_bertopic(self):
-        """assemble the full bertopic model from components"""
+        """assemble the full bertopic model from components.
+
+        when USE_EMBEDDING_SERVICE is true, wraps EmbeddingClient in a
+        BERTopic-compatible interface so that KeyBERT representation and
+        other internal embedding calls still work. pre-computed embeddings
+        are still passed to fit_transform() for the main step.
+        """
         from bertopic import BERTopic
-        from sentence_transformers import SentenceTransformer
 
         umap_model = self._build_umap()
         hdbscan_model = self._build_hdbscan()
         vectorizer_model = self._build_vectorizer()
         representation_models = self._build_representation_models()
 
-        embedding_model = SentenceTransformer(self.config.embedding_model_name)
+        settings = config.settings
+        if settings.USE_EMBEDDING_SERVICE:
+            from embedding.embedding_client import EmbeddingClient
+            embedding_model = _make_embedding_wrapper(
+                EmbeddingClient(model_name=self.config.embedding_model_name)
+            )
+        else:
+            from sentence_transformers import SentenceTransformer
+            embedding_model = SentenceTransformer(self.config.embedding_model_name)
 
         return BERTopic(
             embedding_model=embedding_model,
@@ -227,12 +265,15 @@ class TopicModelTrainer:
     # embedding helpers
 
     def _pre_calculate_embeddings(self, docs: List[str]) -> np.ndarray:
-        """pre-calculate embeddings for all documents (bertopic best practice)"""
-        from sentence_transformers import SentenceTransformer
+        """pre-calculate embeddings for all documents (bertopic best practice).
+        routes through EmbeddingClient — local model or remote endpoint."""
+        from embedding.embedding_client import EmbeddingClient
 
         logger.info(f"Pre-calculating embeddings for {len(docs)} documents...")
-        model = SentenceTransformer(self.config.embedding_model_name)
-        embeddings = model.encode(docs, show_progress_bar=True, batch_size=64)
+        client = EmbeddingClient(
+            model_name=self.config.embedding_model_name,
+        )
+        embeddings = client.embed(docs)
         logger.info(f"Embeddings shape: {embeddings.shape}")
         return embeddings
 
@@ -243,6 +284,7 @@ class TopicModelTrainer:
         docs: List[str],
         embeddings: Optional[np.ndarray] = None,
         timestamps: Optional[List[str]] = None,
+        save_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """train a bertopic model on the provided documents.
 
@@ -250,6 +292,7 @@ class TopicModelTrainer:
             docs: list of text documents to cluster
             embeddings: pre-calculated embeddings (optional, computed if not provided)
             timestamps: list of date strings for topics_over_time (optional)
+            save_dir: override save directory (e.g. staging dir). defaults to latest/
 
         returns:
             dict with training results (topics, metrics, model info)
@@ -320,6 +363,13 @@ class TopicModelTrainer:
             }
             self.tracker.log_metrics(metrics)
 
+            # save model to disk and log artifacts to the ACTIVE run before end_run()
+            # this ensures the run_id can be used directly for model registration
+            model_path = self._save_model_to_disk(save_dir)
+            self.tracker.log_model_dir(str(model_path), artifact_path="model")
+            self._saved_model_path = model_path
+            logger.info(f"Model saved and logged to MLflow run {self.tracker.run_id}: {model_path}")
+
             # build result
             result = {
                 "model_type": self.config.model_type,
@@ -342,6 +392,7 @@ class TopicModelTrainer:
                 "config": self.config.to_dict(),
                 "run_name": run_name,
                 "mlflow_run_id": self.tracker.run_id,
+                "model_path": str(model_path),
             }
 
             logger.info(f"Training complete in {duration:.1f}s: {num_topics} topics from {len(docs)} docs")
@@ -426,8 +477,8 @@ class TopicModelTrainer:
 
     # save and load
 
-    def save_model(self, path: Optional[Path] = None) -> Path:
-        """save trained model using safetensors serialization"""
+    def _save_model_to_disk(self, path: Optional[Path] = None) -> Path:
+        """save model to disk only — called internally inside train() while run is still open."""
         if self.model is None:
             raise RuntimeError("No model to save. Train first.")
 
@@ -441,16 +492,25 @@ class TopicModelTrainer:
             save_ctfidf=True,
             save_embedding_model=self.config.embedding_model_name,
         )
-
         logger.info(f"Model saved to {model_path}")
-
-        # log model directory as mlflow artifact
-        try:
-            self.tracker.log_artifacts_dir(str(model_path))
-        except Exception as e:
-            logger.warning(f"Failed to log model artifacts to MLflow: {e}")
-
         return model_path
+
+    def save_model(self, path: Optional[Path] = None) -> Path:
+        """save trained model to disk.
+
+        if train() was already called, returns the path saved during training
+        (artifacts already logged to MLflow within that run).
+        if called standalone (e.g. after tune()), saves fresh to disk only.
+        """
+        if self.model is None:
+            raise RuntimeError("No model to save. Train first.")
+
+        # return existing path if already saved during train()
+        if hasattr(self, "_saved_model_path") and self._saved_model_path is not None:
+            logger.info(f"Model already saved at {self._saved_model_path} — returning existing path")
+            return self._saved_model_path
+
+        return self._save_model_to_disk(path)
 
     # hyperparameter tuning
 

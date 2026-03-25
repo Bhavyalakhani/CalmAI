@@ -20,13 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 class TopicModelInference:
-    """loads a saved bertopic model and predicts topics on new documents"""
+    """loads a saved bertopic model and predicts topics on new documents.
+
+    always pre-embeds documents via EmbeddingClient before calling
+    BERTopic.transform(), ensuring the model never auto-embeds internally.
+    this allows seamless switching between local and remote embedding.
+    """
 
     def __init__(self, model_type: str = "journals"):
         self.model_type = model_type
         self.model = None
         self.embedding_model = None
         self._loaded = False
+        self._embedding_client = None
+
+    def _get_embedding_client(self):
+        """lazy-init the embedding client."""
+        if self._embedding_client is None:
+            from embedding.embedding_client import EmbeddingClient
+            self._embedding_client = EmbeddingClient()
+        return self._embedding_client
 
     def load(self, path: Optional[Path] = None) -> bool:
         """load a saved bertopic model from disk.
@@ -41,12 +54,30 @@ class TopicModelInference:
 
         model_dir = path or (get_models_dir(self.model_type) / "model")
 
+        # fall back to staging if latest doesn't exist (first pipeline run)
+        if not model_dir.exists() and path is None:
+            from .config import get_staging_dir
+            staging_dir = get_staging_dir(self.model_type) / "model"
+            if staging_dir.exists():
+                logger.info(f"latest/ not found, falling back to staging: {staging_dir}")
+                model_dir = staging_dir
+
         if not model_dir.exists():
             logger.warning(f"Model not found at {model_dir}")
             return False
 
         try:
-            self.model = BERTopic.load(str(model_dir))
+            # when using the remote embedding service, pass our wrapper as
+            # embedding_model to prevent BERTopic from loading the full Qwen 8B
+            # model locally on CPU (which wastes ~3 min and ~16GB RAM each time)
+            settings = config.settings
+            if settings.USE_EMBEDDING_SERVICE:
+                from embedding.embedding_client import EmbeddingClient
+                from topic_modeling.trainer import _make_embedding_wrapper
+                wrapper = _make_embedding_wrapper(EmbeddingClient())
+                self.model = BERTopic.load(str(model_dir), embedding_model=wrapper)
+            else:
+                self.model = BERTopic.load(str(model_dir))
             self._loaded = True
             logger.info(f"Loaded {self.model_type} topic model from {model_dir}")
             return True
@@ -65,6 +96,10 @@ class TopicModelInference:
     ) -> Tuple[List[int], Optional[np.ndarray]]:
         """predict topics for new documents.
 
+        if embeddings are not provided, pre-computes them via EmbeddingClient
+        (local or remote depending on USE_EMBEDDING_SERVICE). this ensures
+        BERTopic never triggers its internal embedding step.
+
         args:
             docs: list of text documents
             embeddings: pre-calculated embeddings (optional)
@@ -74,6 +109,10 @@ class TopicModelInference:
         """
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
+
+        if embeddings is None:
+            client = self._get_embedding_client()
+            embeddings = client.embed(docs, show_progress=False)
 
         topics, probs = self.model.transform(docs, embeddings)
         logger.info(f"Predicted topics for {len(docs)} documents")
@@ -91,7 +130,9 @@ class TopicModelInference:
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
 
-        topics, probs = self.model.transform([text])
+        client = self._get_embedding_client()
+        embeddings = client.embed([text], show_progress=False)
+        topics, probs = self.model.transform([text], embeddings)
         topic_id = int(topics[0])
 
         result = {
@@ -248,6 +289,10 @@ class TopicModelInference:
         """
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
+
+        if embeddings is None:
+            client = self._get_embedding_client()
+            embeddings = client.embed(docs, show_progress=False)
 
         topics, probs = self.model.transform(docs, embeddings)
         results = []

@@ -23,6 +23,7 @@ backend/
 │   ├── services/
 │   │   ├── db.py            # Async MongoDB (Motor) - singleton Database class (9 collections)
 │   │   ├── auth_service.py  # Password hashing (bcrypt), JWT encode/decode (python-jose)
+│   │   ├── embedding_client.py  # LangChain-compatible CalmAIEmbeddings (local or remote Vertex AI endpoint)
 │   │   └── rag_service.py   # LangChain RAG - embeddings, vector search, Gemini LLM, intent classification, fallback text search
 │   └── routers/
 │       ├── auth.py          # POST /auth/signup, POST /auth/login, GET /auth/me, POST /auth/refresh, PATCH /auth/profile, PATCH /auth/notifications, PATCH /auth/password, DELETE /auth/account
@@ -45,6 +46,8 @@ backend/
 │   ├── test_dashboard.py    # 8 tests (stats, mood trend, NaN handling)
 │   ├── test_search.py       # 26 tests (RAG, conversation history, topic detection)
 │   └── test_prompts.py      # 15 tests (create prompt, list pending, list all, respond)
+├── Dockerfile         # FastAPI container for Cloud Run deployment
+├── .dockerignore      # Excludes .env, __pycache__, .git
 ├── requirements.txt
 └── pytest.ini
 ```
@@ -177,11 +180,12 @@ Code config: `INVITE_CODE_LENGTH = 8`, `INVITE_CODE_EXPIRY_DAYS = 7`, max 10 col
 2. Backend writes to `incoming_journals` collection with `is_processed=False`
 3. Airflow DAG 2 (every 12 hours) picks up unprocessed entries
 4. DAG 2 preprocesses, validates, embeds, stores to `rag_vectors` + `journals`
-5. DAG 2 updates `patient_analytics` and marks entries as processed
+5. DAG 2 classifies journals with BERTopic topics (sets `themes` field)
+6. DAG 2 updates `patient_analytics` and marks entries as processed
 
 ## Topic Classification (BERTopic)
 
-The journals router (`routers/journals.py`) lazy-loads `TopicModelInference(model_type="journals")` from the data-pipeline's `src/topic_modeling/` module. When a patient fetches journals, each entry is classified with BERTopic-discovered topics. If the model is unavailable (not trained yet or import error), entries are returned as "unclassified".
+Journal topics are primarily set by the data pipeline's `store_to_mongodb` task, which classifies all journals with BERTopic and stores the `themes` field. The journals router (`routers/journals.py`) has a real-time fallback: if `themes` is missing (e.g., before DAG runs), it lazy-loads `TopicModelInference(model_type="journals")` from the data-pipeline's `src/topic_modeling/` module and classifies on the fly. If the model is unavailable (not trained yet or import error), entries are returned as "unclassified".
 
 ## Patient Analytics Schema
 
@@ -241,11 +245,32 @@ The `GET /journals` and `GET /dashboard/mood-trend/{id}` endpoints sanitize mood
 | `invite_codes` | Patient onboarding invite codes |
 | `prompts` | Therapist-assigned reflection prompts |
 
-## Testing
+## Embedding Service
 
-178 tests across 11 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
+The backend uses a unified `CalmAIEmbeddings` class (`app/services/embedding_client.py`) for all embedding operations (RAG vector search). It implements LangChain's `Embeddings` interface and routes to either:
+
+- **Local mode** (default, `USE_EMBEDDING_SERVICE=false`): Loads `all-MiniLM-L6-v2` (384 dims) on CPU via `HuggingFaceEmbeddings`
+- **Remote mode** (`USE_EMBEDDING_SERVICE=true`): Sends texts to a Vertex AI endpoint running Qwen 8B (4096 dims) via HTTP POST
+
+Configuration in `app/config.py`:
+- `USE_EMBEDDING_SERVICE` — enable remote endpoint (default: `false`)
+- `EMBEDDING_SERVICE_URL` — endpoint URL (required when service is enabled)
+- `EMBEDDING_DIM` — embedding dimension (default: `384`, set to `4096` for Qwen)
+
+## Deployment (Cloud Run)
 
 ```bash
-pytest tests/ -v            # 178 tests
+# build and deploy to Cloud Run
+bash deploy/deploy-backend.sh [PROJECT_ID] [REGION]
+```
+
+The Dockerfile pre-downloads the embedding model at build time for faster cold starts. Environment variables (`MONGODB_URI`, `GEMINI_API_KEY`, `JWT_SECRET`, etc.) are passed to Cloud Run via `--set-env-vars`.
+
+## Testing
+
+173 tests across 10 test files. All external services (MongoDB, Gemini, embedding model) are mocked.
+
+```bash
+pytest tests/ -v            # 173 tests
 pytest tests/ -v --cov      # with coverage
 ```

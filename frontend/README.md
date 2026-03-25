@@ -100,7 +100,7 @@ Open `http://localhost:3000`.
 
 ## Testing
 
-199 tests across 18 files (16 page/layout tests + 2 lib tests).
+200 tests across 18 files (16 page/layout tests + 2 lib tests).
 
 ```bash
 npm test               # run all tests
@@ -125,7 +125,7 @@ All backend calls are mocked via `vi.mock()` on `@/lib/api` and `@/lib/auth-cont
 | `dashboard/analytics/page.test.tsx` | 14 | Bias reports, distribution charts |
 | `dashboard/search/page.test.tsx` | 9 | RAG chat, conversation history, sources |
 | `dashboard/settings/page.test.tsx` | 18 | Profile editing, notifications, password change, account deletion |
-| `journal/page.test.tsx` | 18 | Entry composer, mood selector, timeline |
+| `journal/page.test.tsx` | 19 | Entry composer, mood selector, timeline |
 | `journal/layout.test.tsx` | 5 | Top nav, auth guard |
 | `journal/insights/page.test.tsx` | 12 | Topic distribution, frequency charts |
 | `journal/prompts/page.test.tsx` | 9 | Prompt cards, pending/answered states |
@@ -139,3 +139,19 @@ All backend calls are mocked via `vi.mock()` on `@/lib/api` and `@/lib/auth-cont
 npm run build    # production build (all 14 routes)
 npm run lint     # eslint
 ```
+
+## Deployment (Cloud Run)
+
+The frontend uses a multi-stage Dockerfile with Next.js standalone output for minimal container size.
+
+```bash
+# build and deploy to Cloud Run (auto-detects backend URL from deployed backend)
+bash deploy/deploy-frontend.sh [PROJECT_ID] [REGION]
+```
+
+The `NEXT_PUBLIC_API_URL` build arg is set at build time to the deployed backend's Cloud Run URL. The standalone output (`next.config.ts: output: "standalone"`) produces a self-contained `server.js` that runs on port 3000.
+
+Docker build stages:
+1. **deps** — `npm ci` for deterministic installs
+2. **builder** — `npm run build` with `NEXT_PUBLIC_API_URL` baked in
+3. **runner** — copies `.next/standalone`, `.next/static`, and `public` only

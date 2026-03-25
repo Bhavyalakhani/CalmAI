@@ -11,7 +11,7 @@ import pandas as pd
 from pymongo import MongoClient, IndexModel, ASCENDING
 from pymongo.database import Database
 from pymongo.collection import Collection
-from pymongo.errors import BulkWriteError, OperationFailure
+from pymongo.errors import AutoReconnect, BulkWriteError, OperationFailure
 from pymongo.operations import SearchIndexModel
 
 import sys
@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
+VECTOR_BATCH_SIZE = 100  # smaller batches for large vector documents
 
 # all collections the pipeline writes to
 COLLECTION_NAMES = [
@@ -158,7 +159,7 @@ class MongoDBClient:
                         {
                             "type": "vector",
                             "path": "embedding",
-                            "numDimensions": 384,
+                            "numDimensions": self.settings.EMBEDDING_DIM,
                             "similarity": "cosine",
                         },
                         {
@@ -193,19 +194,26 @@ class MongoDBClient:
 
     # batch insert with bulkwriteerror handling
 
-    def _batch_insert(self, collection: Collection, documents: List[Dict[str, Any]]) -> int:
+    def _batch_insert(self, collection: Collection, documents: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> int:
         if not documents:
             return 0
 
         total_inserted = 0
-        for i in range(0, len(documents), BATCH_SIZE):
-            batch = documents[i : i + BATCH_SIZE]
-            try:
-                result = collection.insert_many(batch, ordered=False)
-                total_inserted += len(result.inserted_ids)
-            except BulkWriteError as e:
-                total_inserted += e.details.get("nInserted", 0)
-                logger.warning(f"Batch insert partial failure: {e.details.get('writeErrors', [])[:3]}")
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i : i + batch_size]
+            for attempt in range(3):
+                try:
+                    result = collection.insert_many(batch, ordered=False)
+                    total_inserted += len(result.inserted_ids)
+                    break
+                except BulkWriteError as e:
+                    total_inserted += e.details.get("nInserted", 0)
+                    logger.warning(f"Batch insert partial failure: {e.details.get('writeErrors', [])[:3]}")
+                    break
+                except AutoReconnect as e:
+                    if attempt == 2:
+                        raise
+                    logger.warning(f"AutoReconnect on batch {i//batch_size + 1}, retrying (attempt {attempt + 1}): {e}")
 
         return total_inserted
 
@@ -274,7 +282,7 @@ class MongoDBClient:
             raw_docs.append(raw_doc)
 
         logger.info(f"Inserting {len(df)} conversations into MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
         raw_count = self._batch_insert(self.conversations, raw_docs)
 
         logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw conversation docs")
@@ -349,7 +357,7 @@ class MongoDBClient:
             })
 
         logger.info(f"Inserting {len(df)} journals into MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
         raw_count = self._batch_insert(self.journals, raw_docs)
 
         logger.info(f"Inserted {vec_count} vector docs, {raw_count} raw journal docs")
@@ -497,7 +505,7 @@ class MongoDBClient:
             })
 
         logger.info(f"Appending {len(df)} incoming journals to MongoDB...")
-        vec_count = self._batch_insert(self.rag_vectors, vector_docs)
+        vec_count = self._batch_insert(self.rag_vectors, vector_docs, batch_size=VECTOR_BATCH_SIZE)
 
         logger.info(f"Upserted {raw_upsert_count} journal docs, inserted {vec_count} vector docs")
         return {"rag_vectors": vec_count, "journals": raw_upsert_count}
@@ -542,7 +550,7 @@ class MongoDBClient:
 
         # severity classification via bertopic severity model (batch)
         try:
-            from src.severity import classify_severity_batch
+            from severity import classify_severity_batch
             severities = classify_severity_batch(contexts)
         except Exception as e:
             logger.warning(f"Severity model classification failed: {e}")
@@ -596,6 +604,121 @@ class MongoDBClient:
             "modified": total_modified,
         }
 
+    def classify_and_update_journals(self) -> Dict[str, int]:
+        """classify all journals with bertopic topics and set the 'themes' field.
+        reads content from the journals collection, predicts topics using the
+        trained journal model, then bulk-updates each document's themes array
+        so the frontend displays topic labels instead of 'unclassified'."""
+        self.connect()
+
+        docs = list(self.journals.find({}, {"journal_id": 1, "content": 1}))
+        if not docs:
+            logger.info("No journals to classify")
+            return {"classified": 0, "theme_updates": 0}
+
+        logger.info(f"Classifying {len(docs)} journals...")
+        contents = [d.get("content", "") for d in docs]
+
+        try:
+            from topic_modeling.inference import TopicModelInference
+            inference = TopicModelInference(model_type="journals")
+            if not inference.load():
+                raise RuntimeError("Journal BERTopic model not available")
+
+            topics, _ = inference.predict(contents)
+            topic_labels = [inference.get_topic_label(int(t)) for t in topics]
+        except Exception as e:
+            logger.error(f"Journal topic classification failed: {e}")
+            raise
+
+        theme_updates = 0
+        from pymongo import UpdateOne
+        operations = []
+
+        for doc, topic_id, topic_label in zip(docs, topics, topic_labels):
+            jid = doc["journal_id"]
+            topic_id_int = int(topic_id)
+
+            if topic_id_int != -1 and topic_label:
+                themes = [topic_label]
+            else:
+                themes = ["Other"]
+            theme_updates += 1
+
+            operations.append(
+                UpdateOne(
+                    {"journal_id": jid},
+                    {"$set": {"themes": themes}},
+                )
+            )
+
+        total_modified = 0
+        for i in range(0, len(operations), BATCH_SIZE):
+            batch = operations[i:i + BATCH_SIZE]
+            result = self.journals.bulk_write(batch, ordered=False)
+            total_modified += result.modified_count
+
+        logger.info(
+            f"Classified {len(docs)} journals: "
+            f"{theme_updates} theme updates, {total_modified} documents modified"
+        )
+
+        return {
+            "classified": len(docs),
+            "theme_updates": theme_updates,
+            "modified": total_modified,
+        }
+
+    def classify_journals_by_ids(self, journal_ids: list) -> Dict[str, int]:
+        """classify specific journals by their ids (used by dag 2 for incoming journals)."""
+        self.connect()
+
+        docs = list(self.journals.find(
+            {"journal_id": {"$in": journal_ids}},
+            {"journal_id": 1, "content": 1},
+        ))
+        if not docs:
+            return {"classified": 0, "theme_updates": 0}
+
+        logger.info(f"Classifying {len(docs)} incoming journals by id...")
+        contents = [d.get("content", "") for d in docs]
+
+        try:
+            from topic_modeling.inference import TopicModelInference
+            inference = TopicModelInference(model_type="journals")
+            if not inference.load():
+                raise RuntimeError("Journal BERTopic model not available")
+
+            topics, _ = inference.predict(contents)
+            topic_labels = [inference.get_topic_label(int(t)) for t in topics]
+        except Exception as e:
+            logger.error(f"Incoming journal classification failed: {e}")
+            raise
+
+        from pymongo import UpdateOne
+        operations = []
+        theme_updates = 0
+
+        for doc, topic_id, topic_label in zip(docs, topics, topic_labels):
+            topic_id_int = int(topic_id)
+            themes = [topic_label] if (topic_id_int != -1 and topic_label) else ["Other"]
+            theme_updates += 1
+            operations.append(
+                UpdateOne(
+                    {"journal_id": doc["journal_id"]},
+                    {"$set": {"themes": themes}},
+                )
+            )
+
+        total_modified = 0
+        for i in range(0, len(operations), BATCH_SIZE):
+            batch = operations[i:i + BATCH_SIZE]
+            result = self.journals.bulk_write(batch, ordered=False)
+            total_modified += result.modified_count
+
+        logger.info(f"Classified {len(docs)} incoming journals: {total_modified} modified")
+        return {"classified": len(docs), "theme_updates": theme_updates, "modified": total_modified}
+
     def upsert_patient_analytics(self, patient_id: str, analytics: Dict[str, Any]):
         """upsert analytics data for a patient (topic dist, mood trends, etc.)"""
         self.connect()
@@ -638,7 +761,57 @@ class MongoDBClient:
             **metadata,
         })
         logger.info(f"Saved training metadata: journal_count={metadata.get('journal_count')}, "
-                     f"conversation_count={metadata.get('conversation_count')}")
+                    f"conversation_count={metadata.get('conversation_count')}")
+
+    # model lifecycle metadata
+
+    def save_model_lifecycle_event(self, event: Dict[str, Any]):
+        """save a model lifecycle event (promotion, rollback, gate decision).
+
+        events are stored in pipeline_metadata with type: model_lifecycle.
+        """
+        self.connect()
+        from datetime import datetime, timezone
+
+        doc = {
+            "type": "model_lifecycle",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **event,
+        }
+        self.pipeline_metadata.insert_one(doc)
+        logger.info(
+            f"Saved model lifecycle event: {event.get('event_type', 'unknown')} "
+            f"for {event.get('model_name', 'unknown')}"
+        )
+
+    def get_latest_lifecycle_event(
+        self, model_name: str, event_type: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """get the most recent lifecycle event for a model.
+
+        args:
+            model_name: e.g. "bertopic_journals"
+            event_type: filter by event type (e.g. "promotion", "rollback")
+
+        returns:
+            event dict or None
+        """
+        self.connect()
+        query = {"type": "model_lifecycle", "model_name": model_name}
+        if event_type:
+            query["event_type"] = event_type
+
+        doc = self.pipeline_metadata.find_one(query, sort=[("timestamp", -1)])
+        if doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def get_active_model_version(self, model_name: str) -> Optional[str]:
+        """get the active (production) model version from lifecycle events."""
+        event = self.get_latest_lifecycle_event(model_name, "promotion")
+        if event:
+            return event.get("version")
+        return None
 
     def get_collection_stats(self) -> Dict[str, int]:
         self.connect()

@@ -27,7 +27,11 @@ class Settings(BaseSettings):
 
     # embedding model
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-    EMBEDDING_DIM: int = 384
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "384"))
+
+    # embedding service — when enabled, routes embedding calls to a remote endpoint
+    USE_EMBEDDING_SERVICE: bool = os.getenv("USE_EMBEDDING_SERVICE", "false").lower() == "true"
+    EMBEDDING_SERVICE_URL: str = os.getenv("EMBEDDING_SERVICE_URL", "")
 
     # cors
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")

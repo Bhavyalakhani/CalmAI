@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "configs"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from conftest import FAKE_DIM
+
 
 # config tests
 
@@ -112,9 +114,10 @@ class TestTopicModelConfig:
 # experiment tracker tests
 
 class TestExperimentTracker:
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_setup_tracking(self, mock_set_exp, mock_set_uri):
+    def test_setup_tracking(self, mock_set_exp, mock_set_uri, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -123,11 +126,12 @@ class TestExperimentTracker:
             assert tracker.experiment_name == "test_experiment"
             mock_set_exp.assert_called_once_with("test_experiment")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.start_run")
     @patch("mlflow.log_param")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_start_run(self, mock_set_exp, mock_set_uri, mock_log_param, mock_start):
+    def test_start_run(self, mock_set_exp, mock_set_uri, mock_log_param, mock_start, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -141,10 +145,11 @@ class TestExperimentTracker:
             assert run_id == "test-run-123"
             mock_log_param.assert_called_once_with("param1", "value1")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.log_metric")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_log_metrics(self, mock_set_exp, mock_set_uri, mock_log_metric):
+    def test_log_metrics(self, mock_set_exp, mock_set_uri, mock_log_metric, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -153,10 +158,11 @@ class TestExperimentTracker:
             tracker.log_metrics({"score": 0.85, "loss": 0.15})
             assert mock_log_metric.call_count == 2
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.end_run")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_end_run(self, mock_set_exp, mock_set_uri, mock_end):
+    def test_end_run(self, mock_set_exp, mock_set_uri, mock_end, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -167,10 +173,11 @@ class TestExperimentTracker:
             mock_end.assert_called_once()
             assert tracker.run_id is None
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.set_tag")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_tag_best_model(self, mock_set_exp, mock_set_uri, mock_set_tag):
+    def test_tag_best_model(self, mock_set_exp, mock_set_uri, mock_set_tag, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -180,11 +187,12 @@ class TestExperimentTracker:
             tracker.tag_best_model()
             mock_set_tag.assert_called_with("model_status", "production")
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.get_experiment_by_name")
     @patch("mlflow.search_runs")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_get_best_run(self, mock_set_exp, mock_set_uri, mock_search, mock_get_exp):
+    def test_get_best_run(self, mock_set_exp, mock_set_uri, mock_search, mock_get_exp, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -204,10 +212,11 @@ class TestExperimentTracker:
             assert best is not None
             assert best["run_id"] == "run-best"
 
+    @patch("topic_modeling.experiment_tracker.ExperimentTracker._setup_vertex_ai")
     @patch("mlflow.get_experiment_by_name")
     @patch("mlflow.set_tracking_uri")
     @patch("mlflow.set_experiment")
-    def test_get_best_run_no_experiment(self, mock_set_exp, mock_set_uri, mock_get_exp):
+    def test_get_best_run_no_experiment(self, mock_set_exp, mock_set_uri, mock_get_exp, mock_vertex):
         with patch("config.settings") as mock_settings:
             mock_settings.PROJECT_ROOT = Path("/tmp/test")
 
@@ -424,7 +433,7 @@ class TestTopicModelTrainer:
         mock_bert_model = _make_mock_bertopic(num_topics=5, num_docs=50)
         trainer._build_bertopic = MagicMock(return_value=mock_bert_model)
 
-        embeddings = np.random.rand(50, 384).astype(np.float32)
+        embeddings = np.random.rand(50, FAKE_DIM).astype(np.float32)
         docs = [f"document {i}" for i in range(50)]
 
         result = trainer.train(docs, embeddings=embeddings)
@@ -632,6 +641,10 @@ class TestTopicModelInference:
         inf._loaded = True
         inf.model = MagicMock()
         inf.model.transform.return_value = ([0, 1, 0], np.array([[0.8, 0.2], [0.3, 0.7], [0.9, 0.1]]))
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(3, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         topics, probs = inf.predict(["doc1", "doc2", "doc3"])
         assert topics == [0, 1, 0]
@@ -652,6 +665,10 @@ class TestTopicModelInference:
             "llm": ["Anxiety", "Depression", "Work stress"],
         })
         inf.model.get_topic.return_value = [("stress", 0.5), ("work", 0.3)]
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(1, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         result = inf.predict_single("feeling stressed about work")
         assert result["topic_id"] == 2
@@ -806,6 +823,10 @@ class TestTopicModelInference:
             "Name": ["T0", "T1"], "llm": ["Anxiety", "Depression"],
         })
         inf.model.get_topic.return_value = [("word1", 0.5)]
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(2, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         results = inf.classify_with_distribution(["doc1", "doc2"])
         assert len(results) == 2
@@ -856,6 +877,10 @@ class TestTopicModelInference:
             "Name": ["T0", "T1"],
             "llm": ["Crisis Level", "Mild Concern"],
         })
+        # mock the embedding client so it doesn't try to load a real model
+        mock_client = MagicMock()
+        mock_client.embed.return_value = np.random.randn(3, FAKE_DIM).astype(np.float32)
+        inf._embedding_client = mock_client
 
         result = inf.predict_severity(["doc1", "doc2", "doc3"])
         assert result == ["crisis", "mild", "unknown"]

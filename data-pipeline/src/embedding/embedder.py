@@ -1,6 +1,6 @@
 # embedding service and pipeline functions
-# uses sentence-transformers (all-MiniLM-L6-v2, 384 dims) to embed
-# conversations, journals, and incoming runtime journals
+# routes through EmbeddingClient which supports both local SentenceTransformer
+# and remote Vertex AI endpoint (controlled by USE_EMBEDDING_SERVICE)
 
 import logging
 import time
@@ -9,7 +9,6 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "configs"))
@@ -17,6 +16,7 @@ import config
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from preprocessing.base_preprocessor import BasePreprocessor
+from embedding.embedding_client import EmbeddingClient
 
 # columns that every embedded journal parquet must have
 JOURNAL_EMBEDDING_SCHEMA = [
@@ -51,27 +51,23 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingService:
 
-    def __init__(self, model_name: Optional[str] = None, batch_size: int = 64):
+    def __init__(self, model_name: Optional[str] = None, batch_size: int = 4):
         self.settings = config.settings
         self.model_name = model_name or self.settings.EMBEDDING_MODEL
         self.batch_size = batch_size
+        self.client = EmbeddingClient(model_name=self.model_name, batch_size=self.batch_size)
         self.model = None
         self.embedding_dim = None
 
-    # caches the model so we only load once
-    def load_model(self) -> SentenceTransformer:
-        if self.model is not None:
-            return self.model
+    def load_model(self):
+        """initialize the embedding client and cache the embedding dimension."""
+        if self.embedding_dim is not None:
+            return self.client
+        self.embedding_dim = self.client.embedding_dim
+        logger.info(f"Embedding ready: model={self.model_name}, dim={self.embedding_dim}, "
+                     f"remote={self.client.use_service}")
+        return self.client
 
-        logger.info(f"Loading embedding model: {self.model_name}")
-        start = time.time()
-        self.model = SentenceTransformer(self.model_name)
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
-        elapsed = time.time() - start
-        logger.info(f"Model loaded in {elapsed:.2f}s | Embedding dimension: {self.embedding_dim}")
-        return self.model
-
-    # encodes in batches and logs progress every 10 batches
     def embed_texts(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
         self.load_model()
 
@@ -80,32 +76,8 @@ class EmbeddingService:
             return np.array([]).reshape(0, self.embedding_dim)
 
         total = len(texts)
-        num_batches = (total + self.batch_size - 1) // self.batch_size
-        logger.info(f"Embedding {total} texts in {num_batches} batches (batch_size={self.batch_size})")
-
-        all_embeddings = []
-        start = time.time()
-
-        for i in range(0, total, self.batch_size):
-            batch = texts[i : i + self.batch_size]
-            batch_num = (i // self.batch_size) + 1
-
-            embeddings = self.model.encode(
-                batch,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-            )
-            all_embeddings.append(embeddings)
-
-            if show_progress and (batch_num % 10 == 0 or batch_num == num_batches):
-                elapsed = time.time() - start
-                rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
-                logger.info(f"  Batch {batch_num}/{num_batches} | {i + len(batch)}/{total} texts | {rate:.0f} texts/sec")
-
-        result = np.vstack(all_embeddings)
-        total_time = time.time() - start
-        logger.info(f"Embedding complete: {total} texts in {total_time:.2f}s | Shape: {result.shape}")
-        return result
+        logger.info(f"Embedding {total} texts (dim={self.embedding_dim})")
+        return self.client.embed(texts, show_progress=show_progress)
 
     def embed_dataframe(self, df: pd.DataFrame, text_column: str) -> pd.DataFrame:
         if text_column not in df.columns:
@@ -114,8 +86,8 @@ class EmbeddingService:
         texts = df[text_column].fillna("").astype(str).tolist()
         embeddings = self.embed_texts(texts)
 
-        df = df.copy()
-        df["embedding"] = [emb.tolist() for emb in embeddings]
+        # assign directly without df.copy() to avoid an extra full dataframe clone
+        df["embedding"] = [row.tolist() for row in embeddings]
         logger.info(f"Added 'embedding' column ({self.embedding_dim} dims) to DataFrame")
         return df
 
@@ -126,7 +98,7 @@ def embed_conversations(
     input_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
     model_name: Optional[str] = None,
-    batch_size: int = 64,
+    batch_size: int = 4,
     skip_existing: bool = True,
     force: bool = False,
 ) -> Path:
@@ -170,7 +142,7 @@ def embed_journals(
     input_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
     model_name: Optional[str] = None,
-    batch_size: int = 64,
+    batch_size: int = 4,
     skip_existing: bool = True,
     force: bool = False,
 ) -> Path:
@@ -263,7 +235,7 @@ def _preprocess_journal_df(df: pd.DataFrame) -> pd.DataFrame:
 def embed_incoming_journals(
     journals,
     model_name: Optional[str] = None,
-    batch_size: int = 64,
+    batch_size: int = 4,
 ) -> pd.DataFrame:
     if isinstance(journals, list):
         df = pd.DataFrame(journals)

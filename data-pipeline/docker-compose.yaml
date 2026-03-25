@@ -49,7 +49,7 @@ x-airflow-common:
   # In order to add custom dependencies or upgrade provider packages you can use your extended image.
   # Comment the image line, place your Dockerfile in the directory where you placed the docker-compose.yaml
   # and uncomment the "build" line below, Then run `docker-compose build` to build the images.
-  # image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.8.1-python3.10}
+  image: ${AIRFLOW_IMAGE_NAME:-}
   build: .
   environment:
     &airflow-common-env
@@ -72,6 +72,34 @@ x-airflow-common:
     AIRFLOW__SMTP__SMTP_USER: ${SMTP_USER:-}
     AIRFLOW__SMTP__SMTP_PASSWORD: ${SMTP_PASSWORD:-}
     AIRFLOW__SMTP__SMTP_MAIL_FROM: ${SMTP_MAIL_FROM:-}
+    MODEL_REGISTRY_BUCKET: ${MODEL_REGISTRY_BUCKET:-}
+    MODEL_REGISTRY_PREFIX: ${MODEL_REGISTRY_PREFIX:-models/bertopic}
+    MODEL_MAX_OUTLIIER_RATIO: ${MODEL_MAX_OUTLIER_RATIO:-0.2}
+    MODEL_MIN_SILHOUETTE: ${MODEL_MIN_SILHOUETTE:-0.10}
+    MODEL_MIN_TOPIC_DIVERSITY: ${MODEL_MIN_TOPIC_DIVERSITY:-0.50}
+    MODEL_MAX_BIAS_DISPARITY: ${MODEL_MAX_BIAS_DISPARITY:-0.10}
+    MODEL_PROMOTION_MIN_SCORE_DELTA: ${MODEL_PROMOTION_MIN_SCORE_DELTA:-0.01}
+    MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-sqlite:////opt/airflow/mlruns/mlflow.db}
+    MLFLOW_ARTIFACT_ROOT: ${MLFLOW_ARTIFACT_ROOT:-/opt/airflow/mlruns/artifacts}
+    ENABLE_MODEL_SELECTION_GATE: ${ENABLE_MODEL_SELECTION_GATE:-true}
+    ENABLE_MODEL_PROMOTION: ${ENABLE_MODEL_PROMOTION:-true}
+    ENABLE_MODEL_ROLLBACK: ${ENABLE_MODEL_ROLLBACK:-true}
+    # GCS service account key — always use the container-side mount path
+    GCS_KEY_FILE: /run/secrets/gcs-key.json
+    # Vertex AI Model Registry — set GCP_PROJECT_ID to enable
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+    GCP_REGION: ${GCP_REGION:-us-central1}
+    GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcs-key.json
+    # Embedding service — set to true to use remote endpoint instead of local model
+    USE_EMBEDDING_SERVICE: ${USE_EMBEDDING_SERVICE:-false}
+    EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
+    EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+    # Data drift detection
+    ENABLE_DRIFT_DETECTION: ${ENABLE_DRIFT_DETECTION:-true}
+    DRIFT_VOCAB_THRESHOLD: ${DRIFT_VOCAB_THRESHOLD:-0.65}
+    DRIFT_EMBEDDING_THRESHOLD: ${DRIFT_EMBEDDING_THRESHOLD:-0.30}
+    DRIFT_TOPIC_THRESHOLD: ${DRIFT_TOPIC_THRESHOLD:-0.25}
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -90,6 +118,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/reports:/opt/airflow/reports
     - ${AIRFLOW_PROJ_DIR:-.}/models:/opt/airflow/models
     - ${AIRFLOW_PROJ_DIR:-.}/mlruns:/opt/airflow/mlruns
+    # GCS service account key — mounted read-only into containers
+    - ./calm-ai-bucket-key.json:/run/secrets/gcs-key.json:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -295,6 +325,30 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+
+  # mlflow UI — accessible at http://localhost:5000
+  # uses the same mlruns/ volume as the airflow containers
+  mlflow:
+    image: python:3.10-slim
+    command: >
+      bash -c "pip install mlflow -q &&
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --allowed-hosts '*'
+      --cors-allowed-origins '*'"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}/mlruns:/mlruns
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
 volumes:
   postgres-db-volume:

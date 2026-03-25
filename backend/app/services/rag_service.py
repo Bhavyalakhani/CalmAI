@@ -14,12 +14,13 @@ import logging
 from typing import Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 from app.config import settings
 from app.services.db import Database
+from app.services.embedding_client import CalmAIEmbeddings
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +28,16 @@ logger = logging.getLogger(__name__)
 MAX_HISTORY_TURNS = 10
 
 # singleton embedding model (loaded once)
-_embedding_model: Optional[HuggingFaceEmbeddings] = None
+_embedding_model: Optional[Embeddings] = None
 
 
-def get_embedding_model() -> HuggingFaceEmbeddings:
-    """get or create the singleton embedding model"""
+def get_embedding_model() -> Embeddings:
+    """get or create the singleton embedding model.
+    routes to remote endpoint or local model based on USE_EMBEDDING_SERVICE."""
     global _embedding_model
     if _embedding_model is None:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _embedding_model = HuggingFaceEmbeddings(
-            model_name=settings.EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-        logger.info("Embedding model loaded")
+        _embedding_model = CalmAIEmbeddings()
+        logger.info(f"Embedding client ready (remote={settings.USE_EMBEDDING_SERVICE})")
     return _embedding_model
 
 

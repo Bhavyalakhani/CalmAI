@@ -37,6 +37,31 @@ def mock_settings(tmp_path):
     s.INCOMING_JOURNAL_BATCH_INTERVAL = "0 */12 * * *"
     s.RETRAIN_ENTRY_THRESHOLD = 50
     s.RETRAIN_MAX_DAYS = 7
+    # drift detection
+    s.DRIFT_VOCAB_THRESHOLD = 0.65
+    s.DRIFT_EMBEDDING_THRESHOLD = 0.30
+    s.DRIFT_TOPIC_THRESHOLD = 0.25
+    s.ENABLE_DRIFT_DETECTION = True
+    # model lifecycle
+    s.MODEL_MAX_OUTLIER_RATIO = 0.20
+    s.MODEL_MIN_SILHOUETTE = 0.10
+    s.MODEL_MIN_TOPIC_DIVERSITY = 0.50
+    s.MODEL_MAX_BIAS_DISPARITY = 0.10
+    s.MODEL_PROMOTION_MIN_SCORE_DELTA = 0.01
+    s.MLFLOW_TRACKING_URI = ""
+    s.MLFLOW_ARTIFACT_ROOT = ""
+    s.MODEL_REGISTRY_BUCKET = ""
+    s.MODEL_REGISTRY_PREFIX = "models/bertopic"
+    s.ENABLE_MODEL_SELECTION_GATE = True
+    s.ENABLE_MODEL_PROMOTION = True
+    s.ENABLE_MODEL_ROLLBACK = True
+    s.GCS_KEY_FILE = "/tmp/fake-gcs-key.json"
+    # Vertex AI Model Registry
+    s.GCP_PROJECT_ID = ""
+    s.GCP_REGION = "us-central1"
+    s.EMBEDDING_DIM = FAKE_DIM
+    s.USE_EMBEDDING_SERVICE = False
+    s.EMBEDDING_SERVICE_URL = ""
     s.ensure_directories = Mock()
     return s
 
@@ -147,7 +172,7 @@ def embedded_conversations_df():
             "User concern: My sleep has been terrible.\n\nCounselor response: Poor sleep can affect many areas of life.",
             "User concern: I had a fight with my partner.\n\nCounselor response: Relationship conflicts are common stress sources.",
         ],
-        "embedding": [[0.1] * 384, [0.2] * 384, [0.3] * 384],
+        "embedding": [[0.1] * FAKE_DIM, [0.2] * FAKE_DIM, [0.3] * FAKE_DIM],
         "context_word_count": [5, 5, 7],
         "context_char_count": [27, 27, 30],
         "context_sentence_count": [1, 1, 2],
@@ -157,7 +182,7 @@ def embedded_conversations_df():
         "response_sentence_count": [1, 1, 1],
         "response_avg_word_length": [5.5, 5.0, 7.5],
         "embedding_model": ["test-model"] * 3,
-        "embedding_dim": [384] * 3,
+        "embedding_dim": [FAKE_DIM] * 3,
         "is_embedded": [True] * 3,
     })
 
@@ -180,7 +205,7 @@ def embedded_journals_df():
             "[2026-01-12] I practiced deep breathing exercises.",
             "[2026-01-15] Had a productive therapy session.",
         ],
-        "embedding": [[0.1] * 384, [0.2] * 384, [0.3] * 384],
+        "embedding": [[0.1] * FAKE_DIM, [0.2] * FAKE_DIM, [0.3] * FAKE_DIM],
         "word_count": [7, 5, 5],
         "char_count": [30, 36, 31],
         "sentence_count": [1, 1, 1],
@@ -191,7 +216,7 @@ def embedded_journals_df():
         "year": [2026, 2026, 2026],
         "days_since_last": [0, 2, 3],
         "embedding_model": ["test-model"] * 3,
-        "embedding_dim": [384] * 3,
+        "embedding_dim": [FAKE_DIM] * 3,
         "is_embedded": [True] * 3,
     })
 
@@ -213,12 +238,18 @@ def make_fake_model(dim=FAKE_DIM):
 
 @pytest.fixture
 def embedding_service():
-    """pre-configured EmbeddingService with a fake model"""
+    """pre-configured EmbeddingService with a fake model injected into its client"""
     from embedding.embedder import EmbeddingService
 
     service = EmbeddingService(model_name="test-model", batch_size=4)
-    service.model = make_fake_model()
+    fake_model = make_fake_model()
+    # inject fake model into the underlying client so embed_texts works
+    service.client._local_model = fake_model
+    service.client._embedding_dim = FAKE_DIM
+    service.client.use_service = False
     service.embedding_dim = FAKE_DIM
+    # keep service.model for test assertions that check encode call count
+    service.model = fake_model
     return service
 
 

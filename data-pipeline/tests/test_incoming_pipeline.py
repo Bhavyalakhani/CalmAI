@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 
+from conftest import FAKE_DIM
+
 
 # incoming journal validation
 
@@ -231,7 +233,7 @@ class TestMongoDBStagingMethods:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["entry"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] entry"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
@@ -424,7 +426,7 @@ class TestPromptMoodPassthrough:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["responded to therapist prompt"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] responded to therapist prompt"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
@@ -487,7 +489,7 @@ class TestPromptMoodPassthrough:
             "journal_id": ["j1"],
             "patient_id": ["p1"],
             "content": ["regular entry no prompt"],
-            "embedding": [np.zeros(384).tolist()],
+            "embedding": [np.zeros(FAKE_DIM).tolist()],
             "embedding_text": ["[2025-01-01] regular entry no prompt"],
             "therapist_id": ["t1"],
             "entry_date": ["2025-01-01"],
@@ -733,7 +735,10 @@ class TestConditionalRetrain:
         mock_trainer_instance.model = MagicMock()
 
         mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_all.return_value = {"overall_pass": True}
+        mock_validator_instance.validate.return_value = {"status": "pass", "overall_pass": True, "metrics": {"composite_score": 0.5}}
+
+        mock_policy_instance = MagicMock()
+        mock_policy_instance.evaluate.return_value = {"decision": "promote", "reason": "test"}
 
         with patch("storage.mongodb_client.MongoDBClient", return_value=mock_client_instance):
             with patch("config.settings", mock_settings):
@@ -741,7 +746,9 @@ class TestConditionalRetrain:
                 mock_settings.RETRAIN_MAX_DAYS = 7
                 with patch("topic_modeling.trainer.TopicModelTrainer", return_value=mock_trainer_instance):
                     with patch("topic_modeling.validation.TopicModelValidator", return_value=mock_validator_instance):
-                        conditional_retrain_callable(ti=mock_ti)
+                        with patch("topic_modeling.selection_policy.SelectionPolicy", return_value=mock_policy_instance):
+                            with patch("topic_modeling.rollback.smoke_test_model", return_value={"passed": True}):
+                                conditional_retrain_callable(ti=mock_ti)
 
         # should save training metadata
         mock_client_instance.save_training_metadata.assert_called_once()
@@ -792,7 +799,10 @@ class TestConditionalRetrain:
         mock_trainer_instance.model = MagicMock()
 
         mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_all.return_value = {"overall_pass": True}
+        mock_validator_instance.validate.return_value = {"status": "pass", "overall_pass": True, "metrics": {"composite_score": 0.5}}
+
+        mock_policy_instance = MagicMock()
+        mock_policy_instance.evaluate.return_value = {"decision": "promote", "reason": "test"}
 
         with patch("storage.mongodb_client.MongoDBClient", return_value=mock_client_instance):
             with patch("config.settings", mock_settings):
@@ -800,7 +810,9 @@ class TestConditionalRetrain:
                 mock_settings.RETRAIN_MAX_DAYS = 7
                 with patch("topic_modeling.trainer.TopicModelTrainer", return_value=mock_trainer_instance):
                     with patch("topic_modeling.validation.TopicModelValidator", return_value=mock_validator_instance):
-                        conditional_retrain_callable(ti=mock_ti)
+                        with patch("topic_modeling.selection_policy.SelectionPolicy", return_value=mock_policy_instance):
+                            with patch("topic_modeling.rollback.smoke_test_model", return_value={"passed": True}):
+                                conditional_retrain_callable(ti=mock_ti)
 
         push_calls = _get_xcom_pushes(mock_ti)
         assert push_calls.get("retrain_triggered") is True
@@ -843,7 +855,10 @@ class TestConditionalRetrain:
         mock_trainer_instance.model = MagicMock()
 
         mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_all.return_value = {"overall_pass": True}
+        mock_validator_instance.validate.return_value = {"status": "pass", "overall_pass": True, "metrics": {"composite_score": 0.5}}
+
+        mock_policy_instance = MagicMock()
+        mock_policy_instance.evaluate.return_value = {"decision": "promote", "reason": "test"}
 
         with patch("storage.mongodb_client.MongoDBClient", return_value=mock_client_instance):
             with patch("config.settings", mock_settings):
@@ -851,7 +866,9 @@ class TestConditionalRetrain:
                 mock_settings.RETRAIN_MAX_DAYS = 7
                 with patch("topic_modeling.trainer.TopicModelTrainer", return_value=mock_trainer_instance):
                     with patch("topic_modeling.validation.TopicModelValidator", return_value=mock_validator_instance):
-                        conditional_retrain_callable(ti=mock_ti)
+                        with patch("topic_modeling.selection_policy.SelectionPolicy", return_value=mock_policy_instance):
+                            with patch("topic_modeling.rollback.smoke_test_model", return_value={"passed": True}):
+                                conditional_retrain_callable(ti=mock_ti)
 
         # journal model trained (60 >= 20), conversation + severity skipped (10 < 20)
         mock_client_instance.save_training_metadata.assert_called_once()

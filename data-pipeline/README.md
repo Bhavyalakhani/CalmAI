@@ -15,6 +15,7 @@ An end-to-end data pipeline for the CalmAI platform - acquires, preprocesses, va
 - [Pipeline Stages](#pipeline-stages)
 - [Pipeline Flow Optimization](#pipeline-flow-optimization)
 - [Airflow DAGs](#airflow-dags)
+- [GCS Model Storage](#gcs-model-storage)
 - [Data Versioning with DVC](#data-versioning-with-dvc)
 - [MongoDB Schema](#mongodb-schema)
 - [Testing](#testing)
@@ -31,42 +32,52 @@ CalmAI is a **B2B SaaS platform for licensed therapists** - not a patient-facing
 2. **Preprocesses** text with domain-specific rules that preserve clinical language (no stopword removal, no lowercasing)
 3. **Validates** schema integrity with expectation-based checks and a validation gate that halts the pipeline on failure
 4. **Detects bias** across topics, severity levels, themes, and temporal patterns with visualizations
-5. **Embeds** all text using `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions) (Temporary for dev, will be upgraded later)
-6. **Stores** everything in MongoDB Atlas with a unified `rag_vectors` collection for vector search
+5. **Embeds** all text via a unified `EmbeddingClient` — `all-MiniLM-L6-v2` (384 dims) locally or Qwen 8B (4096 dims) via a remote Vertex AI endpoint in production
+6. **Classifies** journals with BERTopic topics and sets the `themes` field so the frontend displays topic labels
+7. **Stores** everything in MongoDB Atlas with a unified `rag_vectors` collection for vector search
 
 All clinical judgment stays with human therapists - the system surfaces information but never makes diagnoses or treatment recommendations.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          Apache Airflow (Docker)                            │
-│                                                                             │
-│  DAG 1: calm_ai_data_pipeline (manual trigger, batch, 23 tasks)             │
-│  ┌───────┐   ┌──────────┐   ┌──────────┐   ┌───────┐   ┌─────┐   ┌──────┐ │
-│  │Acquire├──►│Preprocess├──►│ Validate ├──►│ Embed ├──►│Train├──►│ Bias │ │
-│  └───────┘   └──────────┘   └────┬─────┘   └───────┘   └──┬──┘   └──┬───┘ │
-│                                  │ gate                    │         │      │
-│                             pass/fail                      ▼         ▼      │
-│                                             ┌─────────┐ ┌───────┐          │
-│                                             │ MongoDB  │◄┤ Store │          │
-│                                             │  Atlas   │ └───┬───┘          │
-│  DAG 2: incoming_journals_pipeline          │(6 colls) │     │              │
-│  (0 */12 * * *, incremental append)         │          │     ▼              │
-│  ┌─────┐ ┌──────┐ ┌────┐ ┌─────┐ ┌─────┐   │          │ ┌───────┐          │
-│  │Fetch├►│Prepro├►│Val.├►│Embed├►│Store├──►│          │ │ Email │          │
-│  └─────┘ └──────┘ └────┘ └─────┘ └──┬──┘   └──────────┘ └───────┘          │
-│                                     ▼                                       │
-│                    ┌─────────┐  ┌──────┐  ┌───────┐                         │
-│                    │Analytics├─►│ Mark ├─►│ Email │                         │
-│                    └─────────┘  └──────┘  └───────┘                         │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            Apache Airflow (Docker)                              │
+│                                                                                 │
+│  DAG 1: calm_ai_data_pipeline (manual trigger, batch, 30 tasks)                 │
+│  ┌───────┐  ┌──────────┐  ┌──────────┐  ┌───────┐  ┌─────┐  ┌──────┐          │
+│  │Acquire├─►│Preprocess├─►│ Validate ├─►│ Embed ├─►│Train├─►│ Bias │          │
+│  └───────┘  └──────────┘  └────┬─────┘  └───────┘  └──┬──┘  └──┬───┘          │
+│                                │ gate                   │        │               │
+│                           pass/fail                     ▼        ▼               │
+│                                           ┌──────────────────────────┐           │
+│                                           │  Model Lifecycle         │           │
+│                                           │  Validate → Bias Gate   │           │
+│                                           │  → Selection → Smoke    │           │
+│                                           │  → GCS → Vertex AI     │           │
+│                                           └────────────┬─────────────┘           │
+│                                                        ▼                         │
+│                                 ┌─────────┐  ┌───────┐  ┌───────┐               │
+│                                 │ MongoDB  │◄─┤ Store │  │ Email │               │
+│                                 │  Atlas   │  └───────┘  └───────┘               │
+│                                 │(6 colls) │                                     │
+│  DAG 2: incoming_journals_pipeline                                               │
+│  (0 */12 * * *, incremental append)                                              │
+│  ┌─────┐ ┌──────┐ ┌────┐ ┌─────┐ ┌─────┐                                       │
+│  │Fetch├►│Prepro├►│Val.├►│Embed├►│Store├──►│                                     │
+│  └─────┘ └──────┘ └────┘ └─────┘ └──┬──┘  │                                     │
+│                                     ▼                                            │
+│                    ┌─────────┐  ┌──────┐  ┌───────┐                              │
+│                    │Analytics├─►│ Mark ├─►│ Email │                              │
+│                    └─────────┘  └──────┘  └───────┘                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
 External Services:
   • HuggingFace Datasets (conversation data)
-  • Google Gemini API (synthetic journal generation)
+  • Google Gemini API (synthetic journal generation + topic labeling)
   • MongoDB Atlas (vector store + raw collections)
-  • GCS Bucket (DVC remote for artifact versioning)
+  • GCS Bucket (versioned model artifact storage)
+  • Vertex AI Model Registry (cloud-native model versioning)
 ```
 
 ### Tech Stack
@@ -77,12 +88,15 @@ External Services:
 | Containerization | Docker Compose (6 services) |
 | ML/Data | Python, Pandas, NumPy, Sentence-Transformers |
 | Topic Modeling | BERTopic (>=0.17.0), Gemini LLM labeling, three independent models (journals, conversations, severity) |
-| Experiment Tracking | MLflow (>=3.0.0), local file-backed at `mlruns/` |
+| Experiment Tracking | MLflow (>=3.0.0), local SQLite — tracks hyperparameters, metrics, and model artifacts |
+| Model Registry | Vertex AI Model Registry (google-cloud-aiplatform) — cloud-native model versioning |
+| Model Lifecycle | Holdout validation, selection gates, bias gates, promotion, rollback |
 | Storage | MongoDB Atlas (unified vector store) |
-| LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation) (Temporary for now, will be upgraded later) |
-| Embedding | `sentence-transformers/all-MiniLM-L6-v2` (384 dims) |
+| LLM | Google Gemini `gemini-2.5-flash` (synthetic data generation + topic labeling) |
+| Embedding | `EmbeddingClient` — local `all-MiniLM-L6-v2` (384 dims, dev) or remote `jainam02/qwen3-8b-mh-st3-merged` (4096 dims, prod via Vertex AI L4 GPU) |
+| Model Storage | Google Cloud Storage (versioned promoted/rejected uploads via `calm-ai-bucket-key.json`) |
 | Data Versioning | DVC + Google Cloud Storage |
-| Testing | pytest (338 tests, 15 test files) |
+| Testing | pytest (409 tests, 20 test files) |
 | Alerts | SMTP email notifications on pipeline success |
 
 ## Prerequisites
@@ -92,7 +106,7 @@ External Services:
 - **Git**
 - **MongoDB Atlas** account with a cluster and connection string
 - **Google Gemini API key** for synthetic journal generation
-- **(Optional)** GCS bucket + service account for DVC remote storage
+- **(Optional)** GCS bucket + service account key (`calm-ai-bucket-key.json`) for model artifact uploads
 
 ## Environment Setup
 
@@ -162,7 +176,7 @@ SMTP_MAIL_FROM=your-email@gmail.com
    - **Index name**: `vector_index`
    - **Collection**: `rag_vectors`
    - **Field**: `embedding`
-   - **Dimensions**: 384
+   - **Dimensions**: 384 (dev) or 4096 (prod with Qwen) — configurable via `EMBEDDING_DIM` env var
    - **Similarity**: cosine
    - **Filter fields**: `patient_id`, `doc_type`
 
@@ -261,15 +275,28 @@ Runs all 14 pipeline steps sequentially with timing:
 | 9 | Train journal topic model (BERTopic) |
 | 10 | Train conversation topic model (BERTopic) |
 | 11 | Train severity model (BERTopic) |
-| 12 | Store to MongoDB (+ classify conversations with topics & severity) |
+| 12 | Store to MongoDB (+ classify conversations with topics & severity + classify journals with themes) |
 | 13 | Compute patient analytics (per-patient topic distribution) |
+| 14 | Model lifecycle — holdout validation, bias gate, selection policy, smoke test |
+| 15 | GCS upload — promoted models to `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`, rejected to `rejected/v_YYYYMMDD_HHMMSS/` |
 | 14 | DVC version tracking (`dvc commit --force` + `dvc push`) |
 
 At the end, a summary table shows duration per step and the total runtime.
 
 #### Incoming Pipeline (`run_incoming_pipeline.py`)
 
-Mirrors Airflow DAG 2 locally. Fetches unprocessed journals from `incoming_journals`, preprocesses, validates, embeds, stores to MongoDB, conditionally retrains BERTopic models, updates per-patient analytics, and marks entries as processed. Supports seeding test entries for development and a `--verify-only` mode to inspect current DB state without processing.
+Mirrors Airflow DAG 2 locally. Fetches unprocessed journals from `incoming_journals`, preprocesses, validates, embeds, stores to MongoDB (with BERTopic theme classification), conditionally retrains BERTopic models, updates per-patient analytics, and marks entries as processed. Supports seeding test entries for development and a `--verify-only` mode to inspect current DB state without processing.
+
+#### Testing Conditional Retrain (`seed_for_retrain.py`)
+
+Standalone script for testing DAG 2's conditional retrain via the Airflow UI. Seeds `incoming_journals` with test data and optionally backdates training metadata to trigger retrain thresholds.
+
+```bash
+python seed_for_retrain.py                     # seed 60 entries (hits 50-entry threshold)
+python seed_for_retrain.py --count 10          # seed 10 entries only
+python seed_for_retrain.py --force-retrain     # backdate training metadata (triggers 7-day threshold)
+python seed_for_retrain.py --status            # show current DB state and retrain eligibility
+```
 
 ---
 
@@ -302,10 +329,12 @@ data-pipeline/
 │   │   ├── slicer.py                # Generic data slicing utilities
 │   │   ├── conversation_bias.py     # Topic, severity, response quality analysis
 │   │   ├── journal_bias.py          # Theme, temporal, patient distribution analysis
+│   │   ├── holdout_bias_gate.py     # Holdout bias gate for model promotion decisions
 │   │   └── severity.py              # BERTopic severity singleton wrapper (classify_severity)
 │   │
 │   ├── embedding/
-│   │   └── embedder.py              # Sentence-transformer embedding generation
+│   │   ├── embedding_client.py      # Unified EmbeddingClient (local SentenceTransformer or remote Vertex AI endpoint)
+│   │   └── embedder.py              # EmbeddingService — batch embedding for conversations, journals, incoming
 │   │
 │   ├── storage/
 │   │   └── mongodb_client.py        # MongoDB operations (CRUD, indexes, batch inserts)
@@ -316,16 +345,22 @@ data-pipeline/
 │   ├── topic_modeling/
 │   │   ├── __init__.py              # Public API exports
 │   │   ├── config.py                # TopicModelConfig — shared BERTopic + MLflow settings
-│   │   ├── experiment_tracker.py    # MLflowTracker — experiment logging, model registry
+│   │   ├── experiment_tracker.py    # ExperimentTracker — MLflow tracking + Vertex AI Registry
 │   │   ├── trainer.py               # TopicModelTrainer — BERTopic training with Gemini LLM labeling
-│   │   ├── inference.py             # TopicModelInference — topic prediction from saved models
-│   │   ├── validation.py            # TopicModelValidator — quality metrics, coverage checks
+│   │   ├── inference.py             # TopicModelInference — topic prediction (staging fallback, embedding_model wrapper for remote service)
+│   │   ├── validation.py            # TopicModelValidator — clustering metrics, holdout evaluation
+│   │   ├── selection_policy.py      # SelectionPolicy — hard gates + weighted scoring for promotion
+│   │   ├── rollback.py              # ModelRollback — automatic/manual rollback + smoke tests
 │   │   └── bias_analysis.py         # TopicBiasAnalyzer — bias detection using BERTopic topics
+│   │
+│   ├── monitoring/
+│   │   ├── drift_detector.py        # Data drift detection (vocabulary, embedding, topic distribution)
+│   │   └── deployment_verifier.py   # Post-deployment model verification (load, inference, latency)
 │   │
 │   └── alerts/
 │       └── success_email.py         # HTML success email with task durations
 │
-├── tests/                           # 338 tests across 15 files
+├── tests/                           # Tests across 20 files
 │   ├── conftest.py                  # Shared fixtures and mock settings
 │   ├── test_data_downloader.py
 │   ├── test_generate_journals.py
@@ -341,7 +376,12 @@ data-pipeline/
 │   ├── test_analytics.py
 │   ├── test_incoming_pipeline.py
 │   ├── test_topic_modeling.py       # BERTopic trainer + inference tests
-│   └── test_topic_bias.py           # Topic-based bias analysis tests
+│   ├── test_topic_bias.py           # Topic-based bias analysis tests
+│   ├── test_model_selection.py      # Selection policy hard gates + scoring tests
+│   ├── test_holdout_bias_gate.py    # Holdout bias gate tests
+│   ├── test_model_registry.py       # Vertex AI registry + rollback + smoke tests
+│   ├── test_drift_detection.py      # Data drift detection tests
+│   └── test_deployment_verifier.py  # Post-deployment verification tests
 │
 ├── data/
 │   ├── raw/                         # Downloaded and generated raw data
@@ -364,8 +404,15 @@ data-pipeline/
 │   ├── schema/                      # Schema validation JSON reports
 │   └── validation/                  # Reserved for future validation reports
 │
+├── gpu/
+│   └── embedding_server/
+│       ├── Dockerfile               # GPU embedding server (PyTorch + CUDA + SentenceTransformer)
+│       └── server.py                # FastAPI REST API (/embed, /health, /info)
+│
 ├── docker-compose.yaml              # Full Airflow cluster definition
 ├── Dockerfile                       # Custom Airflow image
+├── cloudbuild.yaml                  # Cloud Build CI/CD config (Artifact Registry)
+├── deploy.sh                        # One-script GCP deployment
 ├── requirements.txt                 # Python dependencies
 ├── run_calm_ai_pipeline.py          # Local batch pipeline runner (DAG 1, no Airflow)
 ├── run_incoming_pipeline.py         # Local incoming pipeline runner (DAG 2, no Airflow)
@@ -386,11 +433,14 @@ data-pipeline/
 | `conversation_bias.py` | Uses `TopicModelInference(model_type="conversations")` (model required). Classifies conversations into topics and 4 severity levels via BERTopic severity model. Flags underrepresented topics (<3%). Analyzes response length by topic. Generates visualizations. |
 | `journal_bias.py` | Uses `TopicModelInference(model_type="journals")` (model required). Classifies journals into topics. Analyzes temporal patterns (entries by day/month), patient distribution, and sparse patients (<10 entries). Generates visualizations. |
 | `severity.py` | BERTopic severity singleton wrapper. Lazy-loads `TopicModelInference(model_type="severity")` once, exposes `classify_severity()`, `classify_severity_batch()`, `classify_severity_series()`. Returns `"unknown"` when model is unavailable. Used by `mongodb_client`, `conversation_bias`, and `bias_analysis`. |
-| `embedder.py` | Loads `sentence-transformers/all-MiniLM-L6-v2`, generates 384-dim embeddings in batches of 64. Separate functions for conversations, journals, and incoming journals. |
-| `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Logs pipeline runs to `pipeline_metadata`. |
+| `embedding_client.py` | Unified `EmbeddingClient` — when `USE_EMBEDDING_SERVICE=true`, sends texts to a remote Vertex AI endpoint via HTTP POST; otherwise loads a local SentenceTransformer. Batched (4 texts per request for GPU OOM prevention), pre-allocated numpy output, retry logic with exponential backoff. |
+| `embedder.py` | `EmbeddingService` — uses `EmbeddingClient` to generate embeddings in batches. Separate functions for conversations, journals, and incoming journals. |
+| `mongodb_client.py` | Batch inserts (500 docs/batch), index creation, collection management. Conversations/journals use clear+replace; incoming journals use append. Classifies conversations with topics+severity and journals with themes via BERTopic. Logs pipeline runs to `pipeline_metadata`. |
 | `patient_analytics.py` | Per-patient topic classification using `TopicModelInference(model_type="journals")`. Returns "unclassified" when model unavailable. Computes topic distribution, topics over time, representative entries, and frequency analytics. |
-| `topic_modeling/` | BERTopic topic modeling module (7 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification (`predict_severity`, `predict_severity_series`). `TopicModelValidator` checks quality metrics. `TopicBiasAnalyzer` detects bias using BERTopic topics and severity model. Models saved to `models/bertopic_{type}/latest/model` (safetensors). **No train-test split** — BERTopic is an unsupervised clustering algorithm, so each model is trained on the full dataset via `fit_transform()`. Model quality is evaluated post-hoc using internal metrics (topic diversity, outlier ratio, size Gini, label uniqueness) rather than held-out test data. |
+| `topic_modeling/` | BERTopic topic modeling module (9 files). `TopicModelTrainer` trains three independent models (journals, conversations, severity) with Gemini LLM labeling and MLflow experiment tracking. `TopicModelInference` handles prediction from saved models including severity classification. `TopicModelValidator` checks quality metrics and holdout validation. `SelectionPolicy` enforces hard gates + weighted scoring for promotion. `ModelRollback` + `smoke_test_model` handle post-promotion verification and automatic rollback. `ExperimentTracker` wraps MLflow for experiment tracking and Vertex AI for model registry. `TopicBiasAnalyzer` detects bias using BERTopic topics. Models saved locally to `models/bertopic_{type}/latest/model` (safetensors), uploaded to GCS, and registered in Vertex AI Model Registry. Full lifecycle: train → holdout validation (80/20 split) → bias gate → selection policy → smoke test → GCS upload → Vertex AI registration. |
 | `success_email.py` | Sends HTML email with task duration table, MongoDB collection stats, and pipeline summary on successful completion. |
+| `monitoring/drift_detector.py` | Data drift detection — compares incoming data distributions against training baselines. Three signals: vocabulary drift (cosine similarity of word frequencies), embedding drift (centroid cosine distance), and topic distribution drift (Jensen-Shannon divergence). Used by DAG 2 as an additional retraining trigger. |
+| `monitoring/deployment_verifier.py` | Post-deployment verification — validates promoted models can load, run inference, produce valid topic assignments, and complete within latency bounds. Runs automatically after promotion in both DAGs. |
 
 ---
 
@@ -398,7 +448,7 @@ data-pipeline/
 
 ### DAG 1 - Batch Pipeline (`calm_ai_data_pipeline`)
 
-**Trigger**: Manual | **Mode**: Clear + Replace (idempotent) | **Tasks**: 23
+**Trigger**: Manual | **Mode**: Clear + Replace (idempotent) | **Tasks**: 30
 
 ```
 start
@@ -425,6 +475,16 @@ start
                                └────────┬────────┘
                                    bias_complete
                                         ↓
+                              validate_candidates
+                                        ↓
+                             bias_gate_candidates
+                                        ↓
+                              selection_decision
+                             ┌──────────┴──────────┐
+                   register_and_promote     selection_rejected
+                             └──────────┬──────────┘
+                                lifecycle_complete
+                                        ↓
                             compute_patient_analytics
                                         ↓
                                   store_to_mongodb
@@ -445,7 +505,7 @@ start → fetch_new_entries → preprocess_entries → validate_entries → embe
 
 Uses a `ShortCircuitOperator` - if no new journal entries are found in MongoDB, the entire DAG run is skipped.
 
-The `conditional_retrain` task checks whether BERTopic models need retraining based on two thresholds: 50+ new journal entries accumulated since last training (`RETRAIN_ENTRY_THRESHOLD`) or 7+ days since last training (`RETRAIN_MAX_DAYS`). If either condition is met, all 3 BERTopic models (journals, conversations, severity) are retrained from the full corpus in MongoDB and logged to MLflow. Training metadata is persisted via `MongoDBClient.save_training_metadata()` in `pipeline_metadata` (with `type: "training_metadata"`). First run always saves baseline metadata.
+The `conditional_retrain` task checks whether BERTopic models need retraining based on two thresholds: 50+ new journal entries accumulated since last training (`RETRAIN_ENTRY_THRESHOLD`) or 7+ days since last training (`RETRAIN_MAX_DAYS`). If either condition is met, each model goes through the full lifecycle: **Train → Basic Validation → Holdout Validation (80/20 split) → Bias Gate → Selection Policy → Smoke Test → GCS Upload**. Promoted models are uploaded to `promoted/v_YYYYMMDD_HHMMSS/` + `latest/`; rejected models to `rejected/v_YYYYMMDD_HHMMSS/` for audit. Training metadata is persisted via `MongoDBClient.save_training_metadata()` in `pipeline_metadata` (with `type: "training_metadata"`). First run always saves baseline metadata.
 
 Overview — Incoming Journals Pipeline
 
@@ -520,70 +580,155 @@ The `store_to_mongodb` task aggregates all task durations into the `pipeline_met
 
 ---
 
-## Data Versioning with DVC
+## Model Lifecycle
 
-DVC (Data Version Control) tracks all data artifacts so the pipeline is fully reproducible. Artifacts are stored in a Google Cloud Storage bucket.
+The pipeline implements a complete model lifecycle for BERTopic topic models:
 
-> **Note:** DVC files (`dvc.yaml`, `dvc.lock`, `.dvc/config`, `.dvcignore`) live in the **project root** (`CalmAI/`), not inside `data-pipeline/`. Each stage in `dvc.yaml` uses `wdir: data-pipeline` so all relative paths resolve correctly.
+### Pipeline Flow
+
+```
+train_candidates → validate_candidates → holdout_validation → bias_gate → selection_decision
+  → [pass] smoke_test → GCS upload (promoted/v_YYYYMMDD_HHMMSS/ + latest/) → done
+  → [fail] GCS upload (rejected/v_YYYYMMDD_HHMMSS/) → alert
+```
+
+This lifecycle runs in all 4 pipeline files (2 DAGs + 2 local runners) with consistent logic.
+
+### Validation Metrics
+
+**Clustering quality** (computed on UMAP embeddings, outliers excluded):
+- Silhouette Score — cohesion vs separation
+- Calinski-Harabasz Index — between/within cluster dispersion
+- Davies-Bouldin Index — average cluster similarity (lower is better)
+- DBCV — density-based cluster validity (most principled for HDBSCAN)
+
+**Agreement metrics** (candidate vs active on same holdout):
+- NMI (Normalized Mutual Information)
+- ARI (Adjusted Rand Index)
+- V-measure (homogeneity + completeness)
+
+### Promotion Gates
+
+Hard gates (must all pass):
+- `outlier_ratio <= 0.20`
+- `silhouette_score >= 0.10`
+- `topic_diversity >= 0.50`
+- `bias_disparity_delta <= 0.10`
+
+Then weighted composite score: candidate must beat active by margin (default `0.01`).
+
+### Vertex AI Model Registry
+
+When `GCP_PROJECT_ID` is set, the pipeline registers models in Google Vertex AI Model Registry for cloud-native versioning. Models are uploaded to GCS first, then registered with Vertex AI using the GCS artifact URI. Production models are tracked via labels (`status=production`).
+
+MLflow is retained for experiment tracking only (metrics, params, artifacts). Model registry is handled entirely by Vertex AI.
+
+If `GCP_PROJECT_ID` is not set, Vertex AI registration is silently skipped — the pipeline runs in GCS-only mode.
+
+### Rollback
+
+Automatic rollback triggers on smoke test failure. Manual rollback available via `ModelRollback.rollback(model_name)`.
+
+### Configuration
+
+All thresholds are configurable via environment variables (see `.env.example`):
+- `MODEL_MAX_OUTLIER_RATIO`, `MODEL_MIN_SILHOUETTE`, `MODEL_MIN_TOPIC_DIVERSITY`
+- `MODEL_MAX_BIAS_DISPARITY`, `MODEL_PROMOTION_MIN_SCORE_DELTA`
+- `ENABLE_MODEL_SELECTION_GATE`, `ENABLE_MODEL_PROMOTION`, `ENABLE_MODEL_ROLLBACK`
+
+---
+
+## Model Monitoring
+
+### Data Drift Detection
+
+The pipeline monitors for distribution shifts between training data and incoming data. When volume/time-based retraining thresholds are NOT met, drift detection runs as an additional check that can trigger retraining.
+
+Three drift signals are monitored:
+
+| Signal | Method | Threshold | Description |
+|---|---|---|---|
+| **Vocabulary Drift** | Cosine similarity of word frequency vectors | < 0.65 | Detects changes in language/terminology |
+| **Embedding Drift** | Cosine distance between mean embedding centroids | > 0.30 | Detects semantic shifts in content |
+| **Topic Distribution Drift** | Jensen-Shannon divergence of topic assignments | > 0.25 | Detects changes in topic mix |
+
+Drift is detected if **any** signal exceeds its threshold. The detector compares the 200 most recent processed incoming journals against a sample of 500 training documents.
+
+Implementation: `src/monitoring/drift_detector.py`
+
+### Post-Deployment Verification
+
+After a model is promoted from `staging/` to `latest/`, a verification check runs automatically to confirm the model is serving correctly:
+
+1. **Load check** — model loads from disk without errors
+2. **Inference check** — model produces valid topic assignments on 5 sample documents
+3. **Topic quality check** — not all documents classified as outliers (-1)
+4. **Latency check** — inference completes within 5 seconds
+
+Verification runs in both DAG 1 (`register_and_promote_models`) and DAG 2 (`conditional_retrain`). Failures are logged as warnings (non-blocking) to avoid pipeline failures from transient issues.
+
+Implementation: `src/monitoring/deployment_verifier.py`
+
+### Retraining Triggers
+
+DAG 2 (`incoming_journals_pipeline`) checks three conditions every 12 hours:
+
+| Trigger | Condition | Default |
+|---|---|---|
+| **Volume** | 50+ new journal entries since last training | `RETRAIN_ENTRY_THRESHOLD=50` |
+| **Time** | 7+ days since last training | `RETRAIN_MAX_DAYS=7` |
+| **Drift** | Any drift signal exceeds threshold | `ENABLE_DRIFT_DETECTION=true` |
+
+Volume and time are checked first. If neither triggers, drift detection runs. If any condition is met, all three models (journals, conversations, severity) are retrained with the full lifecycle (train → holdout validate → bias gate → selection → smoke test → promote → verify → GCS upload → Vertex AI register).
+
+---
+
+## GCS Model Storage
+
+Trained BERTopic models are uploaded to a Google Cloud Storage bucket with versioned folder structure. This enables artifact traceability and rollback across both promoted and rejected models.
+
+### GCS Folder Structure
+
+```
+gs://calm-ai_model_registry/models/bertopic/
+├── bertopic_journals/
+│   ├── promoted/
+│   │   ├── v_20260322_143012/   # timestamped version
+│   │   │   └── model/           # safetensors artifacts
+│   │   └── ...
+│   ├── rejected/
+│   │   ├── v_20260322_120500/
+│   │   │   └── model/
+│   │   └── ...
+│   └── latest/                  # always points to most recent promoted model
+│       └── model/
+├── bertopic_conversations/
+│   └── (same structure)
+└── bertopic_severity/
+    └── (same structure)
+```
 
 ### Setup
 
-```bash
-# DVC is included in requirements.txt, already installed
-# Initialize (already done — .dvc/ is at project root)
-dvc init
-
-# Configure remote (already configured in .dvc/config)
-dvc remote add -d gcs_remote gs://calmai-dvc-storage/data-pipeline
-```
-
-### Pipeline Stages
-
-The `dvc.yaml` (at project root) mirrors the Airflow DAG with 12 stages:
-
-| Stage | Outputs |
-|---|---|
-| `download_conversations` | `data/raw/conversations/*.parquet` |
-| `generate_journals` | `data/raw/journals/synthetic_journals.parquet` |
-| `preprocess_conversations` | `data/processed/conversations/processed_conversations.parquet` |
-| `preprocess_journals` | `data/processed/journals/processed_journals.parquet` |
-| `validate` | `reports/schema/*.json` |
-| `bias_conversations` | `reports/bias/conversation_bias_report.json` |
-| `bias_journals` | `reports/bias/journal_bias_report.json` |
-| `embed_conversations` | `data/processed/conversations/embedded_conversations.parquet` |
-| `embed_journals` | `data/processed/journals/embedded_journals.parquet` |
-| `train_journal_model` | `models/bertopic_journals/` (BERTopic safetensors) |
-| `train_conversation_model` | `models/bertopic_conversations/` (BERTopic safetensors) |
-| `train_severity_model` | `models/bertopic_severity/` (BERTopic safetensors) |
-
-### Commands
-
-```bash
-# Reproduce the full pipeline (runs only changed stages)
-dvc repro
-
-# Snapshot current artifact state
-dvc commit --force
-
-# Push artifacts to GCS
-dvc push
-
-# Pull artifacts from GCS (on another machine)
-dvc pull
-
-# Check status of tracked files
-dvc status
-```
+1. Place your GCS service account key as `data-pipeline/calm-ai-bucket-key.json` (gitignored)
+2. The key file path is configured via `GCS_KEY_FILE` in `.env` (default: `./calm-ai-bucket-key.json`)
+3. In Docker, the key is mounted read-only at `/run/secrets/gcs-key.json` via `docker-compose.yaml`
 
 ### How It Works
 
-- `dvc.yaml` declares each stage's command, dependencies (`deps`), and outputs (`outs`)
-- `dvc.lock` stores MD5 hashes of all deps and outs - this is committed to Git
-- Actual data files (parquets, JSONs, PNGs) are in `.gitignore` - Git only tracks their hashes
-- `dvc repro` compares current hashes to `dvc.lock` and only re-runs stages with changed inputs
-- `dvc push` / `dvc pull` syncs artifacts to/from the GCS bucket
+- After model training, the pipeline runs the full lifecycle: holdout validation → bias gate → selection policy → smoke test
+- **Promoted models**: uploaded to `promoted/v_YYYYMMDD_HHMMSS/` AND `latest/`
+- **Rejected models**: uploaded to `rejected/v_YYYYMMDD_HHMMSS/` only (kept for audit, not served)
+- GCS upload is non-blocking — failures are logged but don't fail the pipeline
+- If `MODEL_REGISTRY_BUCKET` is empty or the key file is missing, GCS upload is skipped silently
 
-> **Note**: DVC runs standalone (CLI) and is not part of the Airflow DAGs. This is standard practice, Airflow handles orchestration, DVC handles artifact versioning and reproducibility.
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `GCS_KEY_FILE` | `./calm-ai-bucket-key.json` | Path to GCS service account JSON key |
+| `MODEL_REGISTRY_BUCKET` | `calm-ai_model_registry` | GCS bucket name (no `gs://` prefix) |
+| `MODEL_REGISTRY_PREFIX` | `models/bertopic` | Path prefix inside the bucket |
 
 ---
 
@@ -602,7 +747,7 @@ dvc status
 
 ### Indexes
 
-- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id` + `vector_index` (Atlas vector search on `embedding`, 384 dims, cosine)
+- `rag_vectors`: `doc_type`, `patient_id`, `therapist_id`, `conversation_id`, `journal_id` + `vector_index` (Atlas vector search on `embedding`, configurable dims via `EMBEDDING_DIM`, cosine)
 - `conversations`: `conversation_id` (unique)
 - `journals`: `journal_id` (unique), `patient_id`, `therapist_id`
 - `incoming_journals`: `journal_id` (unique), `patient_id`, `is_processed`
@@ -610,7 +755,7 @@ dvc status
 
 ### Vector Search
 
-The vector search index (`vector_index`) is created automatically by `python src/storage/mongodb_client.py create-indexes` via `_ensure_vector_search_index()`. It uses cosine similarity on `rag_vectors.embedding` (384 dims) with filter fields for `patient_id` and `doc_type`. Can also be created manually via the Atlas UI.
+The vector search index (`vector_index`) is created automatically by `python src/storage/mongodb_client.py create-indexes` via `_ensure_vector_search_index()`. It uses cosine similarity on `rag_vectors.embedding` with configurable dimensions (via `EMBEDDING_DIM`, default 384) and filter fields for `patient_id` and `doc_type`. Can also be created manually via the Atlas UI.
 
 ---
 
@@ -627,7 +772,7 @@ pytest tests/ -v --cov --cov-report=term-missing
 pytest tests/test_embedding.py -v
 ```
 
-### Test Summary (338 tests)
+### Test Summary (409 tests)
 
 | Test File | Tests | Covers |
 |---|---|---|
@@ -636,16 +781,21 @@ pytest tests/test_embedding.py -v
 | `test_conversation_preprocessor.py` | 14 | Text cleaning, dedup, embedding text creation |
 | `test_journal_preprocessor.py` | 17 | Date parsing, temporal features, forward-fill |
 | `test_preprocessing.py` | 2 | Cross-preprocessor integration tests |
-| `test_schema_validator.py` | 32 | All expectation types, pass/fail reporting, incoming validation |
+| `test_schema_validator.py` | 26 | All expectation types, pass/fail reporting, incoming validation |
 | `test_slicer.py` | 17 | Data slicing, threshold detection |
 | `test_conversation_bias.py` | 21 | Topic classification, severity, visualizations |
 | `test_journal_bias.py` | 22 | Theme classification, temporal analysis |
+| `test_holdout_bias_gate.py` | 8 | Holdout bias gate evaluation, disparity checks |
 | `test_embedding.py` | 19 | Embedding generation, batch processing, incoming |
 | `test_storage.py` | 32 | MongoDB CRUD, batch inserts, indexes, incoming, training metadata |
 | `test_analytics.py` | 31 | Patient topic classification, analytics computation, frequency, date range |
 | `test_incoming_pipeline.py` | 29 | Fetch, preprocess, validate, embed, store, retrain, mark processed |
 | `test_topic_modeling.py` | 58 | BERTopic trainer, inference, validation, MLflow tracking |
 | `test_topic_bias.py` | 17 | Topic-based bias analysis using BERTopic |
+| `test_model_registry.py` | 13 | Vertex AI registry, smoke test, model promotion |
+| `test_model_selection.py` | 11 | Selection policy, promotion gates, composite scoring |
+| `test_drift_detection.py` | 33 | Vocabulary drift, embedding drift, topic drift, JSD, combined checks |
+| `test_deployment_verifier.py` | 12 | Post-deployment model load, inference, topic quality, latency |
 | `conftest.py` | - | Shared fixtures, mock settings, sample DataFrames |
 
 All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers) are mocked in tests.
@@ -680,19 +830,7 @@ docker compose up airflow-init
 docker compose up -d
 # Trigger DAG from http://localhost:8080
 
-# 4. Pull DVC artifacts (instead of regenerating)
-dvc pull
 ```
-
-### With DVC (Skip Computation)
-
-If artifacts have been previously pushed to GCS, any team member can skip the computation-heavy steps:
-
-```bash
-dvc pull    # Downloads all parquets, reports, and embeddings from GCS
-```
-
-This gives you the exact same data artifacts as the original run, verified by MD5 hashes.
 
 ### Verification Checklist
 
@@ -703,7 +841,50 @@ This gives you the exact same data artifacts as the original run, verified by MD
 - [ ] Schema reports in `reports/schema/` with pass/fail expectations
 - [ ] BERTopic models saved to `models/bertopic_journals/`, `models/bertopic_conversations/`, and `models/bertopic_severity/`
 - [ ] MLflow experiments tracked in `mlruns/`
-- [ ] All 338 tests passing (`pytest tests/ -v`)
+- [ ] Vertex AI Model Registry populated (if `GCP_PROJECT_ID` is set)
+- [ ] All 409 tests passing (`pytest tests/ -v`)
+
+---
+
+## Deployment
+
+### Cloud Build CI/CD
+
+The pipeline includes a `cloudbuild.yaml` for building and pushing the Airflow Docker image to Google Artifact Registry.
+
+```bash
+# one-script deployment (enables APIs, creates Artifact Registry, builds and pushes image)
+chmod +x deploy.sh
+./deploy.sh
+```
+
+Prerequisites:
+- `gcloud` CLI installed and authenticated
+- `GCP_PROJECT_ID` set in `.env`
+- GCP project with billing enabled
+
+### Deployment Architecture
+
+| Component | Service | Deploy Script | Estimated Cost |
+|---|---|---|---|
+| Airflow (data pipeline) | GCE VM `e2-standard-4` | `deploy/deploy-gce.sh` | ~$100/mo |
+| Frontend | Cloud Run (serverless) | `deploy/deploy-frontend.sh` | ~$0 (free tier) |
+| Backend (FastAPI) | Cloud Run (serverless) | `deploy/deploy-backend.sh` | ~$10/mo |
+| Embedding (Qwen 8B) | Vertex AI Endpoint (L4 GPU) | `deploy/deploy-embedding-endpoint.sh` | ~$0.90/hr (on-demand) |
+| MongoDB | MongoDB Atlas (free tier → M10) | — | $0–$57/mo |
+| Model artifacts | GCS bucket | — | ~$1/mo |
+| Docker images | Artifact Registry | `deploy.sh` (initial) | ~$1/mo |
+
+### Files
+
+- `cloudbuild.yaml` — Cloud Build config (build + push Airflow Docker image to Artifact Registry)
+- `deploy.sh` — One-time GCP setup (enable APIs, create repos/buckets, firewall rules, submit build)
+- `deploy/deploy-backend.sh` — Build, push, deploy backend to Cloud Run
+- `deploy/deploy-frontend.sh` — Build, push, deploy frontend to Cloud Run (auto-detects backend URL)
+- `deploy/deploy-gce.sh` — Provision GCE VM for Airflow, copy `.env` and GCS key
+- `deploy/deploy-embedding-endpoint.sh` — Deploy/undeploy Qwen 8B on Vertex AI L4 GPU (up/down)
+- `deploy/gce-startup.sh` — GCE VM startup script (Docker install, Artifact Registry auth)
+- `.github/workflows/deploy.yml` — GitHub Actions CD (4 parallel builds on push to `main`)
 
 ---
 
@@ -721,4 +902,22 @@ This gives you the exact same data artifacts as the original run, verified by MD
 | `SMTP_USER` | No | SMTP username |
 | `SMTP_PASSWORD` | No | SMTP password / app password |
 | `SMTP_MAIL_FROM` | No | Sender email address |
-| `GOOGLE_APPLICATION_CREDENTIALS` | DVC | Path to GCS service account JSON key |
+| `GCS_KEY_FILE` | No | Path to GCS service account JSON key (default: `./calm-ai-bucket-key.json`) |
+| `MODEL_REGISTRY_BUCKET` | No | GCS bucket for model uploads (default: `calm-ai_model_registry`) |
+| `MODEL_REGISTRY_PREFIX` | No | Path prefix in GCS bucket (default: `models/bertopic`) |
+| `MODEL_MAX_OUTLIER_RATIO` | No | Max outlier ratio for promotion gate (default: `0.20`) |
+| `MODEL_MIN_SILHOUETTE` | No | Min silhouette score for promotion (default: `0.10`) |
+| `MODEL_MIN_TOPIC_DIVERSITY` | No | Min topic diversity for promotion (default: `0.50`) |
+| `MODEL_MAX_BIAS_DISPARITY` | No | Max bias disparity delta for promotion (default: `0.10`) |
+| `ENABLE_MODEL_SELECTION_GATE` | No | Enable selection policy gate (default: `true`) |
+| `ENABLE_MODEL_PROMOTION` | No | Enable model promotion to GCS (default: `true`) |
+| `ENABLE_MODEL_ROLLBACK` | No | Enable automatic rollback on smoke test failure (default: `true`) |
+| `GCP_PROJECT_ID` | No | GCP project ID — enables Vertex AI Model Registry when set |
+| `GCP_REGION` | No | GCP region for Vertex AI (default: `us-central1`) |
+| `USE_EMBEDDING_SERVICE` | No | Route embeddings to remote endpoint (default: `false`) |
+| `EMBEDDING_SERVICE_URL` | No | URL of the remote embedding endpoint (required when `USE_EMBEDDING_SERVICE=true`) |
+| `EMBEDDING_DIM` | No | Embedding dimension (default: `384`, set to `4096` for Qwen prod) |
+| `ENABLE_DRIFT_DETECTION` | No | Enable data drift detection as retraining trigger (default: `true`) |
+| `DRIFT_VOCAB_THRESHOLD` | No | Cosine similarity below this triggers vocabulary drift (default: `0.65`) |
+| `DRIFT_EMBEDDING_THRESHOLD` | No | Cosine distance above this triggers embedding drift (default: `0.30`) |
+| `DRIFT_TOPIC_THRESHOLD` | No | JSD above this triggers topic distribution drift (default: `0.25`) |
