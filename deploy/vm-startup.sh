@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# GCE VM startup script — installs Docker and pulls the Airflow pipeline
+# GCE VM startup script — runs once at first boot as root
+# Installs Docker and configures Artifact Registry auth for the ubuntu user
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -17,16 +18,15 @@ if ! command -v docker &>/dev/null; then
   systemctl start docker
 fi
 
-# allow the default user to run docker
-usermod -aG docker "$(logname 2>/dev/null || echo ubuntu)" || true
+# add ubuntu user to docker group so it can run docker without sudo
+usermod -aG docker ubuntu
 
-# authenticate to Artifact Registry
-gcloud auth configure-docker us-central1-docker.pkg.dev --quiet 2>/dev/null || true
+# configure Artifact Registry auth for the ubuntu user
+# (VM has cloud-platform scope so gcloud works without explicit login)
+sudo -u ubuntu gcloud auth configure-docker us-central1-docker.pkg.dev --quiet 2>/dev/null || true
 
-# create working directory
-WORK_DIR="/home/$(logname 2>/dev/null || echo ubuntu)/calmai"
-mkdir -p "${WORK_DIR}"
+# create working directory owned by ubuntu
+mkdir -p /home/ubuntu/calmai
+chown ubuntu:ubuntu /home/ubuntu/calmai
 
 echo "=== GCE startup complete ==="
-echo "Next: clone repo or copy docker-compose.yaml + .env to ${WORK_DIR}, then run:"
-echo "  cd ${WORK_DIR} && docker compose up -d"

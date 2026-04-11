@@ -39,7 +39,7 @@ echo ""
 gcloud config set project "$PROJECT_ID"
 
 # 2. enable required APIs
-echo "[1/6] Enabling GCP APIs..."
+echo "[1/5] Enabling GCP APIs..."
 gcloud services enable \
     artifactregistry.googleapis.com \
     cloudbuild.googleapis.com \
@@ -50,7 +50,7 @@ gcloud services enable \
     --quiet
 
 # 3. create artifact registry docker repo (idempotent)
-echo "[2/6] Creating Artifact Registry repo..."
+echo "[2/5] Creating Artifact Registry repo..."
 if ! gcloud artifacts repositories describe "$REPO_NAME" \
     --location="$REGION" --format="value(name)" 2>/dev/null; then
     gcloud artifacts repositories create "$REPO_NAME" \
@@ -63,12 +63,12 @@ else
 fi
 
 # 4. configure docker auth for artifact registry
-echo "[3/6] Configuring Docker auth..."
+echo "[3/5] Configuring Docker auth..."
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
 # 5. create GCS bucket for model artifacts (if configured)
 if [[ -n "$BUCKET_NAME" ]]; then
-    echo "[4/6] Creating GCS bucket..."
+    echo "[4/5] Creating GCS bucket..."
     if ! gsutil ls "gs://$BUCKET_NAME" 2>/dev/null; then
         gsutil mb -l "$REGION" "gs://$BUCKET_NAME"
         echo "  Created: gs://$BUCKET_NAME"
@@ -76,11 +76,11 @@ if [[ -n "$BUCKET_NAME" ]]; then
         echo "  Already exists: gs://$BUCKET_NAME"
     fi
 else
-    echo "[4/6] Skipping GCS bucket (MODEL_REGISTRY_BUCKET not set)"
+    echo "[4/5] Skipping GCS bucket (MODEL_REGISTRY_BUCKET not set)"
 fi
 
 # 6. create firewall rule for airflow UI (idempotent)
-echo "[5/6] Creating firewall rule for Airflow UI..."
+echo "[5/5] Creating firewall rule for Airflow UI..."
 if ! gcloud compute firewall-rules describe allow-airflow-ui --format="value(name)" 2>/dev/null; then
     gcloud compute firewall-rules create allow-airflow-ui \
         --direction=INGRESS \
@@ -95,25 +95,16 @@ else
     echo "  Already exists: allow-airflow-ui"
 fi
 
-# 7. submit cloud build
-TAG=$(git rev-parse --short HEAD 2>/dev/null || echo "manual")
-echo "[6/6] Submitting Cloud Build (tag: $TAG)..."
-gcloud builds submit \
-    --config cloudbuild.yaml \
-    --substitutions="_REGION=$REGION,_REPO=$REPO_NAME,_TAG=$TAG" \
-    .
-
 echo ""
 echo "========================================"
-echo " Deployment Complete"
+echo " GCP Infrastructure Ready"
 echo "========================================"
 echo ""
-echo "Docker image pushed to:"
-echo "  ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/calmai-airflow:latest"
+echo "Artifact Registry: ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}"
 echo ""
-echo "Next steps (run from project root):"
-echo "  1. Deploy backend:   ./deploy/deploy-backend.sh"
-echo "  2. Deploy frontend:  BACKEND_URL=<backend-url> ./deploy/deploy-frontend.sh"
-echo "  3. Deploy GCE VM:    ./deploy/deploy-gce.sh"
-echo "  4. Deploy embedding: EMBEDDING_MODEL=jainam02/qwen3-8b-mh-st3-merged ./deploy/deploy-embedding-endpoint.sh up"
+echo "Next steps — push to a deploy/* branch to trigger CI/CD, OR run manually:"
+echo "  1. Deploy backend:   bash deploy/deploy-backend.sh"
+echo "  2. Deploy frontend:  bash deploy/deploy-frontend.sh  (auto-detects backend URL)"
+echo "  3. Deploy GCE VM:    bash deploy/deploy-vm.sh"
+echo "  4. Deploy embedding: EMBEDDING_MODEL=jainam02/qwen3-8b-mh-st3-merged bash deploy/deploy-embedding-endpoint.sh up"
 echo ""

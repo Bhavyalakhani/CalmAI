@@ -1,42 +1,139 @@
-# continuous deployment pipeline for CalmAI
-# builds and pushes Docker images for all components to Google Artifact Registry
-# 4 parallel jobs: data-pipeline (Airflow), frontend, backend, embedding-server
+# CI/CD deployment pipeline for CalmAI
+# Triggers on any branch prefixed with "deploy/" to keep main clean for live demo.
 #
-# currently set to manual-only (workflow_dispatch) to avoid GCP costs on every push.
-# to re-enable automatic deploys, uncomment the 'push' trigger below.
+# Job flow:
+#   bootstrap (GCP infra, idempotent)
+#     ├── build-airflow  → deploy-vm      (GCE + docker compose)
+#     ├── build-backend  → deploy-backend → deploy-frontend (Cloud Run)
+#     └── build-embedding-server          (image only — GPU deploy is manual/cost-sensitive)
 #
-# prerequisites:
-#   1. GCP_PROJECT_ID, GCP_REGION, GCP_SA_KEY secrets set in GitHub repo settings
-#   2. Service account with roles: Cloud Build Editor, Artifact Registry Writer, Storage Admin
-#   3. Artifact Registry repo "calmai-docker" created (deploy.sh does this)
+# Required GitHub Secrets:
+#   GCP_PROJECT_ID        — GCP project ID
+#   GCP_SA_KEY            — service account JSON key (also reused as GCS key on VM)
+#   GCP_REGION            — (optional) defaults to us-central1
+#   MONGODB_URI           — MongoDB Atlas connection string
+#   MONGODB_DATABASE      — (optional) defaults to calm_ai
+#   GEMINI_API_KEY        — Google Gemini API key
+#   JWT_SECRET            — backend JWT signing secret
+#   AIRFLOW_FERNET_KEY    — Airflow fernet key (generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+#   MODEL_REGISTRY_BUCKET — (optional) GCS bucket name for model storage
+#   EMBEDDING_MODEL       — (optional) embedding model name, defaults to all-MiniLM-L6-v2
 
 name: Deploy
 
 on:
-  workflow_dispatch:  # manual trigger from GitHub Actions tab
-  # uncomment below to auto-deploy on push to main:
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'data-pipeline/**'
-  #     - 'frontend/**'
-  #     - 'backend/**'
-  #     - 'deploy/**'
-  #     - '.github/workflows/deploy.yml'
+  push:
+    branches:
+      - 'deploy/**'
 
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  GCP_REGION: us-central1
+  GCP_REGION: ${{ secrets.GCP_REGION || 'us-central1' }}
   REPO_NAME: calmai-docker
+  VM_NAME: calmai-airflow
+  VM_ZONE: ${{ secrets.GCP_REGION || 'us-central1' }}-a
 
 jobs:
-  # shared auth setup anchor
-  deploy-pipeline:
-    name: Build Pipeline (Airflow)
+  # ── 1. one-time infra bootstrap (idempotent — safe to re-run) ─────────────
+  bootstrap:
+    name: GCP Infrastructure Setup
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Enable GCP APIs
+        run: |
+          gcloud services enable \
+            artifactregistry.googleapis.com \
+            storage.googleapis.com \
+            run.googleapis.com \
+            compute.googleapis.com \
+            aiplatform.googleapis.com \
+            --quiet
+
+      - name: Create Artifact Registry repo
+        run: |
+          if ! gcloud artifacts repositories describe ${{ env.REPO_NAME }} \
+              --location=${{ env.GCP_REGION }} --format="value(name)" 2>/dev/null; then
+            gcloud artifacts repositories create ${{ env.REPO_NAME }} \
+              --repository-format=docker \
+              --location=${{ env.GCP_REGION }} \
+              --description="CalmAI Docker images"
+            echo "Created Artifact Registry repo: ${{ env.REPO_NAME }}"
+          else
+            echo "Artifact Registry repo already exists."
+          fi
+
+      - name: Create GCS bucket for model storage
+        if: ${{ secrets.MODEL_REGISTRY_BUCKET != '' }}
+        run: |
+          if ! gsutil ls gs://${{ secrets.MODEL_REGISTRY_BUCKET }} 2>/dev/null; then
+            gsutil mb -l ${{ env.GCP_REGION }} gs://${{ secrets.MODEL_REGISTRY_BUCKET }}
+            echo "Created GCS bucket: ${{ secrets.MODEL_REGISTRY_BUCKET }}"
+          else
+            echo "GCS bucket already exists."
+          fi
+
+      - name: Create firewall rule for Airflow UI (port 8080)
+        run: |
+          if ! gcloud compute firewall-rules describe allow-airflow-ui \
+              --format="value(name)" 2>/dev/null; then
+            gcloud compute firewall-rules create allow-airflow-ui \
+              --direction=INGRESS \
+              --action=ALLOW \
+              --rules=tcp:8080 \
+              --target-tags=airflow \
+              --source-ranges=0.0.0.0/0 \
+              --description="Allow Airflow UI on port 8080" \
+              --quiet
+            echo "Created firewall rule."
+          else
+            echo "Firewall rule already exists."
+          fi
+
+      - name: Provision GCE VM (idempotent)
+        run: |
+          if gcloud compute instances describe ${{ env.VM_NAME }} \
+              --project=${{ secrets.GCP_PROJECT_ID }} --zone=${{ env.VM_ZONE }} &>/dev/null; then
+            echo "VM already exists, ensuring it is running..."
+            gcloud compute instances start ${{ env.VM_NAME }} \
+              --project=${{ secrets.GCP_PROJECT_ID }} --zone=${{ env.VM_ZONE }} --quiet 2>/dev/null || true
+          else
+            echo "Creating VM..."
+            gcloud compute instances create ${{ env.VM_NAME }} \
+              --project=${{ secrets.GCP_PROJECT_ID }} \
+              --zone=${{ env.VM_ZONE }} \
+              --machine-type=e2-standard-4 \
+              --boot-disk-size=100GB \
+              --boot-disk-type=pd-balanced \
+              --image-family=ubuntu-2204-lts \
+              --image-project=ubuntu-os-cloud \
+              --scopes=cloud-platform \
+              --tags=airflow \
+              --metadata-from-file=startup-script=deploy/vm-startup.sh
+            echo "VM created. Waiting for startup script to finish (~3 min)..."
+            sleep 180
+          fi
+
+  # ── 2a. build Airflow image ────────────────────────────────────────────────
+  build-airflow:
+    name: Build Airflow Image
+    runs-on: ubuntu-latest
+    needs: bootstrap
     permissions:
       contents: read
       id-token: write
@@ -56,34 +153,11 @@ jobs:
           docker push ${IMAGE}:${{ github.sha }}
           docker push ${IMAGE}:latest
 
-  deploy-frontend:
-    name: Build Frontend
+  # ── 2b. build backend image ────────────────────────────────────────────────
+  build-backend:
+    name: Build Backend Image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-      - uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
-      - name: Build & push frontend image
-        run: |
-          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-frontend
-          docker build \
-            --build-arg NEXT_PUBLIC_API_URL=${{ secrets.BACKEND_URL }} \
-            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
-            frontend/
-          docker push ${IMAGE}:${{ github.sha }}
-          docker push ${IMAGE}:latest
-
-  deploy-backend:
-    name: Build Backend
-    runs-on: ubuntu-latest
+    needs: bootstrap
     permissions:
       contents: read
       id-token: write
@@ -103,9 +177,11 @@ jobs:
           docker push ${IMAGE}:${{ github.sha }}
           docker push ${IMAGE}:latest
 
+  # ── 2c. build embedding server image (no auto-deploy — GPU cost) ───────────
   build-embedding-server:
-    name: Build Embedding Server
+    name: Build Embedding Server Image
     runs-on: ubuntu-latest
+    needs: bootstrap
     permissions:
       contents: read
       id-token: write
@@ -122,17 +198,218 @@ jobs:
         run: |
           IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server
           docker build \
-            --build-arg EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL }} \
+            --build-arg EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL || 'sentence-transformers/all-MiniLM-L6-v2' }} \
             -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
-            -f data-pipeline/gpu/embedding_server/Dockerfile \
-            data-pipeline/gpu/embedding_server/
+            -f deploy/embedding_server/Dockerfile \
+            deploy/embedding_server/
           docker push ${IMAGE}:${{ github.sha }}
           docker push ${IMAGE}:latest
 
+  # ── 3a. deploy backend to Cloud Run ────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend (Cloud Run)
+    runs-on: ubuntu-latest
+    needs: build-backend
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      backend_url: ${{ steps.get_url.outputs.url }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy to Cloud Run
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend:${{ github.sha }}
+          gcloud run deploy calmai-backend \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --image=${IMAGE} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8000 \
+            --memory=2Gi \
+            --cpu=2 \
+            --min-instances=0 \
+            --max-instances=5 \
+            --set-env-vars="MONGODB_URI=${MONGODB_URI}" \
+            --set-env-vars="MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE || 'calm_ai' }}" \
+            --set-env-vars="GEMINI_API_KEY=${GEMINI_API_KEY}" \
+            --set-env-vars="GEMINI_MODEL=gemini-2.5-flash" \
+            --set-env-vars="JWT_SECRET=${JWT_SECRET}" \
+            --set-env-vars="USE_EMBEDDING_SERVICE=false" \
+            --set-env-vars="EMBEDDING_DIM=384" \
+            --quiet
+
+      - name: Get backend URL
+        id: get_url
+        run: |
+          URL=$(gcloud run services describe calmai-backend \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+          echo "Backend URL: ${URL}"
+
+  # ── 3b. build frontend with live backend URL, then deploy ──────────────────
+  deploy-frontend:
+    name: Deploy Frontend (Cloud Run)
+    runs-on: ubuntu-latest
+    needs: deploy-backend   # must wait for backend URL
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build frontend with backend URL baked in
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-frontend
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL=${{ needs.deploy-backend.outputs.backend_url }} \
+            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
+            frontend/
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-frontend:${{ github.sha }}
+          gcloud run deploy calmai-frontend \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --image=${IMAGE} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=3000 \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --quiet
+
+      - name: Print frontend URL
+        run: |
+          URL=$(gcloud run services describe calmai-frontend \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+          echo "Frontend URL: ${URL}"
+
+  # ── 3c. deploy Airflow to GCE VM via SSH ───────────────────────────────────
+  deploy-vm:
+    name: Deploy Airflow (GCE VM)
+    runs-on: ubuntu-latest
+    needs: [bootstrap, build-airflow]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Write GCS key file (reuse GCP_SA_KEY — already has Storage permissions)
+        run: echo '${{ secrets.GCP_SA_KEY }}' > /tmp/gcs-key.json
+
+      - name: Write .env file for VM
+        env:
+          FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB: ${{ secrets.MONGODB_DATABASE }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MODEL_BUCKET: ${{ secrets.MODEL_REGISTRY_BUCKET }}
+        run: |
+          IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow:latest"
+          {
+            echo "AIRFLOW_UID=1000"
+            echo "AIRFLOW_IMAGE_NAME=${IMAGE}"
+            echo "AIRFLOW_FERNET_KEY=${FERNET_KEY}"
+            echo "MONGODB_URI=${MONGODB_URI}"
+            echo "MONGODB_DATABASE=${MONGODB_DB:-calm_ai}"
+            echo "GEMINI_API_KEY=${GEMINI_KEY}"
+            echo "GEMINI_MODEL=gemini-2.5-flash"
+            echo "GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}"
+            echo "GCP_REGION=${{ env.GCP_REGION }}"
+            echo "MODEL_REGISTRY_BUCKET=${MODEL_BUCKET}"
+            echo "MODEL_REGISTRY_PREFIX=models/bertopic"
+            echo "GCS_KEY_FILE=/run/secrets/gcs-key.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcs-key.json"
+            echo "USE_EMBEDDING_SERVICE=false"
+            echo "EMBEDDING_DIM=384"
+            echo "EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2"
+            echo "ENABLE_DRIFT_DETECTION=true"
+            echo "ENABLE_MODEL_SELECTION_GATE=true"
+            echo "ENABLE_MODEL_PROMOTION=true"
+            echo "ENABLE_MODEL_ROLLBACK=true"
+          } > /tmp/airflow.env
+
+      - name: Copy files to VM
+        run: |
+          gcloud compute scp data-pipeline/docker-compose.yaml \
+            ${{ env.VM_NAME }}:~/calmai/docker-compose.yaml \
+            --zone=${{ env.VM_ZONE }} --project=${{ secrets.GCP_PROJECT_ID }} \
+            --strict-host-key-checking=no --quiet
+          gcloud compute scp /tmp/airflow.env \
+            ${{ env.VM_NAME }}:~/calmai/.env \
+            --zone=${{ env.VM_ZONE }} --project=${{ secrets.GCP_PROJECT_ID }} \
+            --strict-host-key-checking=no --quiet
+          gcloud compute scp /tmp/gcs-key.json \
+            ${{ env.VM_NAME }}:~/calmai/calm-ai-bucket-key.json \
+            --zone=${{ env.VM_ZONE }} --project=${{ secrets.GCP_PROJECT_ID }} \
+            --strict-host-key-checking=no --quiet
+
+      - name: Pull image and restart Airflow
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --strict-host-key-checking=no \
+            --command="
+              set -e
+              gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+              cd ~/calmai
+              docker compose pull
+              docker compose up airflow-init --exit-code-from airflow-init 2>/dev/null || true
+              docker compose up -d --remove-orphans
+              echo '=== Airflow services ==='
+              docker compose ps
+            " \
+            --quiet
+
+      - name: Print Airflow UI URL
+        run: |
+          IP=$(gcloud compute instances describe ${{ env.VM_NAME }} \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --zone=${{ env.VM_ZONE }} \
+            --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+          echo "Airflow UI: http://${IP}:8080"
+
+  # ── 4. summary ────────────────────────────────────────────────────────────
   summary:
     name: Deployment Summary
     runs-on: ubuntu-latest
-    needs: [deploy-pipeline, deploy-frontend, deploy-backend, build-embedding-server]
+    needs: [deploy-backend, deploy-frontend, deploy-vm, build-embedding-server]
     if: always()
     steps:
       - name: Post summary
@@ -141,7 +418,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Pipeline (Airflow) | ${{ needs.deploy-pipeline.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Frontend | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Backend | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Embedding Server | ${{ needs.build-embedding-server.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend (Cloud Run) | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend (Cloud Run) | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Airflow (GCE VM) | ${{ needs.deploy-vm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Embedding Server (image only) | ${{ needs.build-embedding-server.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Embedding endpoint is **not auto-deployed** (GPU cost). Run manually: \`bash deploy/deploy-embedding-endpoint.sh up\`" >> $GITHUB_STEP_SUMMARY

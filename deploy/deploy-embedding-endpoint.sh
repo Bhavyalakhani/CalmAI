@@ -44,8 +44,8 @@ case "${ACTION}" in
       docker build \
         --build-arg EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
         -t "${IMAGE}:latest" \
-        -f data-pipeline/gpu/embedding_server/Dockerfile \
-        data-pipeline/gpu/embedding_server/
+        -f "${SCRIPT_DIR}/embedding_server/Dockerfile" \
+        "${SCRIPT_DIR}/embedding_server/"
 
       echo "Pushing to Artifact Registry..."
       docker push "${IMAGE}:latest"

@@ -109,15 +109,12 @@ x-airflow-common:
     # for other purpose (development, test and especially production usage) build/extend Airflow image.
     _PIP_ADDITIONAL_REQUIREMENTS: ''
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-.}/configs:/opt/airflow/configs
-    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
-    - ${AIRFLOW_PROJ_DIR:-.}/src:/opt/airflow/src
-    - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
-    - ${AIRFLOW_PROJ_DIR:-.}/reports:/opt/airflow/reports
-    - ${AIRFLOW_PROJ_DIR:-.}/models:/opt/airflow/models
-    - ${AIRFLOW_PROJ_DIR:-.}/mlruns:/opt/airflow/mlruns
+    # Runtime dirs as named volumes — persist across restarts, no host dir needed
+    - airflow-logs:/opt/airflow/logs
+    - airflow-data:/opt/airflow/data
+    - airflow-reports:/opt/airflow/reports
+    - airflow-models:/opt/airflow/models
+    - airflow-mlruns:/opt/airflow/mlruns
     # GCS service account key — mounted read-only into containers
     - ./calm-ai-bucket-key.json:/run/secrets/gcs-key.json:ro
   user: "${AIRFLOW_UID:-50000}:0"
@@ -276,8 +273,8 @@ services:
           echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
           echo
         fi
-        mkdir -p /sources/logs /sources/dags /sources/plugins
-        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        mkdir -p /opt/airflow/logs /opt/airflow/data /opt/airflow/reports /opt/airflow/models /opt/airflow/mlruns
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/data /opt/airflow/reports /opt/airflow/models /opt/airflow/mlruns
         exec /entrypoint airflow version
     # yamllint enable rule:line-length
     environment:
@@ -289,7 +286,11 @@ services:
       _PIP_ADDITIONAL_REQUIREMENTS: ''
     user: "0:0"
     volumes:
-      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+      - airflow-logs:/opt/airflow/logs
+      - airflow-data:/opt/airflow/data
+      - airflow-reports:/opt/airflow/reports
+      - airflow-models:/opt/airflow/models
+      - airflow-mlruns:/opt/airflow/mlruns
 
   airflow-cli:
     <<: *airflow-common
@@ -341,7 +342,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ${AIRFLOW_PROJ_DIR:-.}/mlruns:/mlruns
+      - airflow-mlruns:/mlruns
     restart: always
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:5000/health"]
@@ -352,3 +353,8 @@ services:
 
 volumes:
   postgres-db-volume:
+  airflow-logs:
+  airflow-data:
+  airflow-reports:
+  airflow-models:
+  airflow-mlruns:
