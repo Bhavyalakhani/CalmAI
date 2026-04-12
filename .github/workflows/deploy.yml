@@ -380,7 +380,7 @@ jobs:
             --strict-host-key-checking=no \
             --command="
               set -e
-              gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+              sudo gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
               cd ~/calmai
               sudo docker compose pull
               sudo docker compose up airflow-init --exit-code-from airflow-init 2>/dev/null || true

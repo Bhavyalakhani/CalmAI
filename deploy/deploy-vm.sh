@@ -87,7 +87,7 @@ gcloud compute ssh "${VM_NAME}" \
   --strict-host-key-checking=no \
   --command="
     set -e
-    gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+    sudo gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
     cd ~/calmai
     sudo docker compose pull
     sudo docker compose up airflow-init --exit-code-from airflow-init 2>/dev/null || true
