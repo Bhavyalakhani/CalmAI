@@ -1,0 +1,182 @@
+# Embedding server deployment — manual trigger only (GPU cost control)
+#
+# Actions:
+#   build-only  — build and push image to Artifact Registry, no Vertex AI
+#   up          — build + push image, register model, deploy to L4 GPU endpoint
+#   down        — undeploy from endpoint (stops GPU billing ~$0.90/hr), image untouched
+#
+# Required GitHub Secrets (same as deploy.yml):
+#   GCP_PROJECT_ID, GCP_SA_KEY, GCP_REGION, EMBEDDING_MODEL
+
+name: Embedding Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - build-only
+          - up
+          - down
+
+env:
+  GCP_REGION: ${{ secrets.GCP_REGION || 'us-central1' }}
+  REPO_NAME: calmai-docker
+  ENDPOINT_NAME: calmai-embedding-endpoint
+  MODEL_NAME: calmai-qwen-embedding
+
+jobs:
+  embedding:
+    name: Embedding Server — ${{ github.event.inputs.action }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # ── build + push (skipped for 'down') ────────────────────────────────
+      - name: Configure Docker auth
+        if: github.event.inputs.action != 'down'
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+        if: github.event.inputs.action != 'down'
+
+      - name: Build & push embedding server image
+        if: github.event.inputs.action != 'down'
+        uses: docker/build-push-action@v5
+        with:
+          context: deploy/embedding_server/
+          file: deploy/embedding_server/Dockerfile
+          push: true
+          build-args: |
+            EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL || 'sentence-transformers/all-MiniLM-L6-v2' }}
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── deploy to Vertex AI (only for 'up') ──────────────────────────────
+      - name: Register model in Vertex AI
+        if: github.event.inputs.action == 'up'
+        run: |
+          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server:latest
+
+          MODEL_ID=$(gcloud ai models upload \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --display-name=${{ env.MODEL_NAME }} \
+            --container-image-uri=${IMAGE} \
+            --container-ports=8080 \
+            --container-health-route="/health" \
+            --container-predict-route="/embed" \
+            --format='value(name)' 2>/dev/null) || true
+
+          if [[ -z "${MODEL_ID}" ]]; then
+            MODEL_ID=$(gcloud ai models list \
+              --project=${{ secrets.GCP_PROJECT_ID }} \
+              --region=${{ env.GCP_REGION }} \
+              --filter="displayName=${{ env.MODEL_NAME }}" \
+              --sort-by=~createTime --limit=1 \
+              --format='value(name)')
+          fi
+
+          echo "MODEL_ID=${MODEL_ID}" >> $GITHUB_ENV
+          echo "Registered model: ${MODEL_ID}"
+
+      - name: Create or reuse Vertex AI endpoint
+        if: github.event.inputs.action == 'up'
+        run: |
+          ENDPOINT_ID=$(gcloud ai endpoints list \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --filter="displayName=${{ env.ENDPOINT_NAME }}" \
+            --limit=1 --format='value(name)' 2>/dev/null) || true
+
+          if [[ -z "${ENDPOINT_ID}" ]]; then
+            echo "Creating endpoint..."
+            ENDPOINT_ID=$(gcloud ai endpoints create \
+              --project=${{ secrets.GCP_PROJECT_ID }} \
+              --region=${{ env.GCP_REGION }} \
+              --display-name=${{ env.ENDPOINT_NAME }} \
+              --format='value(name)')
+          fi
+
+          echo "ENDPOINT_ID=${ENDPOINT_ID}" >> $GITHUB_ENV
+          echo "Endpoint: ${ENDPOINT_ID}"
+
+      - name: Deploy model to L4 GPU endpoint
+        if: github.event.inputs.action == 'up'
+        run: |
+          gcloud ai endpoints deploy-model ${{ env.ENDPOINT_ID }} \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --model=${{ env.MODEL_ID }} \
+            --display-name=${{ env.MODEL_NAME }}-deployed \
+            --machine-type=g2-standard-8 \
+            --accelerator=type=nvidia-l4,count=1 \
+            --min-replica-count=1 \
+            --max-replica-count=1
+
+      # ── undeploy from Vertex AI (only for 'down') ─────────────────────────
+      - name: Undeploy model from endpoint
+        if: github.event.inputs.action == 'down'
+        run: |
+          ENDPOINT_ID=$(gcloud ai endpoints list \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --filter="displayName=${{ env.ENDPOINT_NAME }}" \
+            --limit=1 --format='value(name)' 2>/dev/null) || true
+
+          if [[ -z "${ENDPOINT_ID}" ]]; then
+            echo "No endpoint found — nothing to undeploy"
+            exit 0
+          fi
+
+          DEPLOYED_MODEL_ID=$(gcloud ai endpoints describe "${ENDPOINT_ID}" \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(deployedModels[0].id)' 2>/dev/null) || true
+
+          if [[ -n "${DEPLOYED_MODEL_ID}" ]]; then
+            gcloud ai endpoints undeploy-model "${ENDPOINT_ID}" \
+              --project=${{ secrets.GCP_PROJECT_ID }} \
+              --region=${{ env.GCP_REGION }} \
+              --deployed-model-id="${DEPLOYED_MODEL_ID}"
+            echo "Model undeployed — GPU billing stopped"
+          else
+            echo "No deployed models on endpoint"
+          fi
+
+      # ── summary ───────────────────────────────────────────────────────────
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Embedding Server — ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ github.event.inputs.action }}" == "up" ]]; then
+            echo "Endpoint ID: ${{ env.ENDPOINT_ID }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Set on backend and VM:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "USE_EMBEDDING_SERVICE=true" >> $GITHUB_STEP_SUMMARY
+            echo "EMBEDDING_SERVICE_URL=${{ env.ENDPOINT_ID }}" >> $GITHUB_STEP_SUMMARY
+            echo "EMBEDDING_DIM=4096" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "> **IMPORTANT:** Run this workflow with action=down when done to stop GPU billing (~\$0.90/hr)" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ github.event.inputs.action }}" == "down" ]]; then
+            echo "GPU billing stopped. Endpoint preserved for future redeploy." >> $GITHUB_STEP_SUMMARY
+          fi

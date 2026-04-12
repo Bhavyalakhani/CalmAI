@@ -150,12 +150,17 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
       - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - uses: docker/setup-buildx-action@v3
       - name: Build & push Airflow image
-        run: |
-          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow
-          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest data-pipeline/
-          docker push ${IMAGE}:${{ github.sha }}
-          docker push ${IMAGE}:latest
+        uses: docker/build-push-action@v5
+        with:
+          context: data-pipeline/
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-airflow:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # ── 2b. build backend image ────────────────────────────────────────────────
   build-backend:
@@ -174,40 +179,17 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
       - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+      - uses: docker/setup-buildx-action@v3
       - name: Build & push backend image
-        run: |
-          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend
-          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest backend/
-          docker push ${IMAGE}:${{ github.sha }}
-          docker push ${IMAGE}:latest
-
-  # ── 2c. build embedding server image (no auto-deploy — GPU cost) ───────────
-  build-embedding-server:
-    name: Build Embedding Server Image
-    runs-on: ubuntu-latest
-    needs: bootstrap
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
+        uses: docker/build-push-action@v5
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-      - uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-      - run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
-      - name: Build & push embedding server image
-        run: |
-          IMAGE=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-embedding-server
-          docker build \
-            --build-arg EMBEDDING_MODEL=${{ secrets.EMBEDDING_MODEL || 'sentence-transformers/all-MiniLM-L6-v2' }} \
-            -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:latest \
-            -f deploy/embedding_server/Dockerfile \
-            deploy/embedding_server/
-          docker push ${IMAGE}:${{ github.sha }}
-          docker push ${IMAGE}:latest
+          context: backend/
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPO_NAME }}/calmai-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # ── 3a. deploy backend to Cloud Run ────────────────────────────────────────
   deploy-backend:
@@ -368,6 +350,13 @@ jobs:
             echo "ENABLE_MODEL_ROLLBACK=true"
           } > /tmp/airflow.env
 
+      - name: Ensure calmai directory exists on VM
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone=${{ env.VM_ZONE }} --project=${{ secrets.GCP_PROJECT_ID }} \
+            --strict-host-key-checking=no --quiet \
+            --command="mkdir -p ~/calmai"
+
       - name: Copy files to VM
         run: |
           gcloud compute scp data-pipeline/docker-compose.yaml \
@@ -413,7 +402,7 @@ jobs:
   summary:
     name: Deployment Summary
     runs-on: ubuntu-latest
-    needs: [deploy-backend, deploy-frontend, deploy-vm, build-embedding-server]
+    needs: [deploy-backend, deploy-frontend, deploy-vm]
     if: always()
     steps:
       - name: Post summary
@@ -425,6 +414,5 @@ jobs:
           echo "| Backend (Cloud Run) | ${{ needs.deploy-backend.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Frontend (Cloud Run) | ${{ needs.deploy-frontend.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Airflow (GCE VM) | ${{ needs.deploy-vm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Embedding Server (image only) | ${{ needs.build-embedding-server.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> Embedding endpoint is **not auto-deployed** (GPU cost). Run manually: \`bash deploy/deploy-embedding-endpoint.sh up\`" >> $GITHUB_STEP_SUMMARY
+          echo "> Embedding server is managed separately via the **Embedding Server** workflow (Actions tab → Embedding Server → Run workflow)" >> $GITHUB_STEP_SUMMARY
