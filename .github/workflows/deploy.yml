@@ -79,11 +79,13 @@ jobs:
           fi
 
       - name: Create GCS bucket for model storage
-        if: ${{ secrets.MODEL_REGISTRY_BUCKET != '' }}
         run: |
-          if ! gsutil ls gs://${{ secrets.MODEL_REGISTRY_BUCKET }} 2>/dev/null; then
-            gsutil mb -l ${{ env.GCP_REGION }} gs://${{ secrets.MODEL_REGISTRY_BUCKET }}
-            echo "Created GCS bucket: ${{ secrets.MODEL_REGISTRY_BUCKET }}"
+          BUCKET="${{ secrets.MODEL_REGISTRY_BUCKET }}"
+          if [[ -z "${BUCKET}" ]]; then
+            echo "MODEL_REGISTRY_BUCKET not set — skipping"
+          elif ! gsutil ls gs://${BUCKET} 2>/dev/null; then
+            gsutil mb -l ${{ env.GCP_REGION }} gs://${BUCKET}
+            echo "Created GCS bucket: ${BUCKET}"
           else
             echo "GCS bucket already exists."
           fi
