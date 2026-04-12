@@ -89,11 +89,11 @@ gcloud compute ssh "${VM_NAME}" \
     set -e
     gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
     cd ~/calmai
-    docker compose pull
-    docker compose up airflow-init --exit-code-from airflow-init 2>/dev/null || true
-    docker compose up -d --remove-orphans
+    sudo docker compose pull
+    sudo docker compose up airflow-init --exit-code-from airflow-init 2>/dev/null || true
+    sudo docker compose up -d --remove-orphans
     echo '=== Airflow services ==='
-    docker compose ps
+    sudo docker compose ps
   " \
   --quiet
 
