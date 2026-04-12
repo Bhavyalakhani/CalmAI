@@ -64,6 +64,8 @@ jobs:
             compute.googleapis.com \
             aiplatform.googleapis.com \
             --quiet
+          echo "Waiting 60s for API propagation..."
+          sleep 60
 
       - name: Create Artifact Registry repo
         run: |
