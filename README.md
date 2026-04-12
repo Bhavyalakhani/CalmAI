@@ -93,8 +93,8 @@ CalmAI/
 │   ├── copilot-instructions.md     # Copilot context and conventions
 │   └── workflows/
 │       ├── ci.yml                  # CI pipeline (data-pipeline + backend + frontend + Docker)
-│       └── deploy.yml              # CD pipeline (4 parallel builds → Artifact Registry)
-│
+│       ├── deploy.yml              # CD pipeline (4 parallel builds → Artifact Registry)
+│       └── deploy-embedding.yml   # Embedding server — manual trigger (build / up / down)
 ├── data-pipeline/          # Data acquisition, processing, and storage
 │   ├── dags/               #   2 Airflow DAGs (batch 30 tasks + incoming journals 11 tasks)
 │   ├── src/                #   Pipeline source code (10 modules)
@@ -402,6 +402,16 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull
 | **Summary** | Posts deployment status for all 4 components |
 
 All 4 build jobs run in parallel. Requires GitHub secrets: `GCP_PROJECT_ID`, `GCP_SA_KEY`, `GCP_REGION`, `BACKEND_URL`, `EMBEDDING_MODEL`.
+
+**Embedding Server** — `.github/workflows/deploy-embedding.yml` — manual trigger only (GPU cost control):
+
+| Action | Description |
+|---|---|
+| `build-only` | Builds and pushes the Qwen embedding server image to Artifact Registry |
+| `up` | Builds image + registers model on Vertex AI + deploys to L4 GPU endpoint (~$0.90/hr) |
+| `down` | Undeploys model from endpoint — stops GPU billing immediately, endpoint preserved |
+
+Trigger from GitHub Actions tab → **Embedding Server** → **Run workflow**. Run `down` immediately after testing to avoid unnecessary GPU costs.
 
 ## Deployment
 
