@@ -12,3 +12,12 @@ USER airflow
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy application code into the image so the VM only needs docker pull, not git pull
+USER root
+COPY --chown=airflow:root dags/ /opt/airflow/dags/
+COPY --chown=airflow:root src/ /opt/airflow/src/
+COPY --chown=airflow:root configs/ /opt/airflow/configs/
+RUN mkdir -p /opt/airflow/plugins && chown airflow:root /opt/airflow/plugins
+USER airflow
+
