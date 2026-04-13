@@ -24,7 +24,7 @@ async def seed():
     hashed_pw = hash_password(DEFAULT_PASSWORD)
 
     # upsert therapist (skip if email already exists)
-    therapist_email = "dr.chen@calmai.com"
+    therapist_email = "dr.marcus.reed@calmai.com"
     existing_therapist = await db.users.find_one({"email": therapist_email})
 
     if existing_therapist:
@@ -34,7 +34,7 @@ async def seed():
         therapist_doc = {
             "email": therapist_email,
             "hashed_password": hashed_pw,
-            "name": "Dr. Sarah Chen",
+            "name": "Dr. Marcus Reed",
             "role": "therapist",
             "avatar_url": None,
             "created_at": "2024-06-15T00:00:00Z",
@@ -45,7 +45,7 @@ async def seed():
         }
         therapist_result = await db.users.insert_one(therapist_doc)
         therapist_id = str(therapist_result.inserted_id)
-        logger.info(f"Created therapist: Dr. Sarah Chen (id: {therapist_id})")
+        logger.info(f"Created therapist: Dr. Marcus Reed (id: {therapist_id})")
 
     # patient profiles matching data-pipeline/configs/patient_profiles.yaml
     patients = [

@@ -228,12 +228,14 @@ jobs:
             --min-instances=0 \
             --max-instances=5 \
             --set-env-vars="MONGODB_URI=${MONGODB_URI}" \
-            --set-env-vars="MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE || 'calm_ai' }}" \
+            --set-env-vars="MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE || 'calm_ai_db' }}" \
             --set-env-vars="GEMINI_API_KEY=${GEMINI_API_KEY}" \
-            --set-env-vars="GEMINI_MODEL=gemini-2.5-flash" \
+            --set-env-vars="GEMINI_MODEL=${{ secrets.GEMINI_MODEL || 'gemini-2.5-flash' }}" \
             --set-env-vars="JWT_SECRET=${JWT_SECRET}" \
-            --set-env-vars="USE_EMBEDDING_SERVICE=false" \
-            --set-env-vars="EMBEDDING_DIM=384" \
+            --set-env-vars="FRONTEND_URL=*" \
+            --set-env-vars="USE_EMBEDDING_SERVICE=${{ secrets.USE_EMBEDDING_SERVICE || 'false' }}" \
+            --set-env-vars="EMBEDDING_SERVICE_URL=${{ secrets.EMBEDDING_SERVICE_URL || '' }}" \
+            --set-env-vars="EMBEDDING_DIM=${{ secrets.EMBEDDING_DIM || '384' }}" \
             --quiet
 
       - name: Get backend URL
@@ -332,7 +334,7 @@ jobs:
             echo "AIRFLOW_IMAGE_NAME=${IMAGE}"
             echo "AIRFLOW_FERNET_KEY=${FERNET_KEY}"
             echo "MONGODB_URI=${MONGODB_URI}"
-            echo "MONGODB_DATABASE=${MONGODB_DB:-calm_ai}"
+            echo "MONGODB_DATABASE=${MONGODB_DB:-calm_ai_db}"
             echo "GEMINI_API_KEY=${GEMINI_KEY}"
             echo "GEMINI_MODEL=gemini-2.5-flash"
             echo "GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}"
