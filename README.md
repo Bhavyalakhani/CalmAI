@@ -380,91 +380,171 @@ All external services (HuggingFace, Gemini API, MongoDB, sentence-transformers, 
 
 ## CI/CD
 
-GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push and pull request:
+### CI — `.github/workflows/ci.yml`
+
+Runs on every push and pull request:
 
 | Job | Description |
 |---|---|
 | **Data Pipeline Tests** | Python 3.10, installs dependencies, runs 409 pytest tests |
-| **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests (10 files) |
+| **Backend Tests** | Python 3.10, installs dependencies, runs 173 pytest tests |
 | **Frontend Tests & Build** | Node 20, lint, 200 Vitest tests, production build |
-| **Docker Build** | Validates the Airflow Docker image builds successfully |
-| **CI Pass** | Gates the pipeline — fails if any job fails |
+| **CI Pass** | Gates the pipeline — fails if any job above fails |
 
-**CD** — `.github/workflows/deploy.yml` auto-deploys on push to `main` (after CI passes):
+### Deploy — `.github/workflows/deploy.yml`
+
+Triggers on any push to a `deploy/**` branch. `main` is kept clean for CI tests. The pipeline is fully idempotent — safe to re-run if any job fails midway.
+
+```
+bootstrap (GCP infra)
+  ├── build-airflow  → deploy-vm      (GCE VM + docker compose)
+  ├── build-backend  → deploy-backend → deploy-frontend (Cloud Run)
+  └── build-embedding-server          (image only — GPU deploy is separate)
+          └── summary
+```
 
 | Job | Description |
 |---|---|
-| **Wait for CI** | Blocks until the CI workflow passes |
-| **Build Pipeline** | Builds Airflow Docker image, pushes to Artifact Registry |
-| **Build Frontend** | Builds Next.js standalone image, pushes to Artifact Registry |
-| **Build Backend** | Builds FastAPI image, pushes to Artifact Registry |
-| **Build Embedding Server** | Builds GPU embedding server image, pushes to Artifact Registry |
-| **Summary** | Posts deployment status for all 4 components |
+| **bootstrap** | Enables GCP APIs, creates Artifact Registry repo, GCS bucket, firewall rule (port 8080), provisions GCE VM |
+| **build-airflow** | Builds Airflow image (code COPY'd in), pushes to Artifact Registry with GHA layer cache |
+| **build-backend** | Builds FastAPI image, pushes to Artifact Registry with GHA layer cache |
+| **build-embedding-server** | Builds Qwen embedding server image (~30GB with model baked in), pushes to Artifact Registry |
+| **deploy-backend** | `gcloud run deploy` — sets all env vars from secrets, outputs backend URL |
+| **deploy-frontend** | Builds Next.js image with backend URL baked in, deploys to Cloud Run |
+| **deploy-vm** | SSH into GCE VM, copies `docker-compose.yaml` + `.env` + GCS key, runs `docker compose up` |
+| **summary** | Posts deployment status table to GitHub Actions summary |
 
-All 4 build jobs run in parallel. Requires GitHub secrets: `GCP_PROJECT_ID`, `GCP_SA_KEY`, `GCP_REGION`, `BACKEND_URL`, `EMBEDDING_MODEL`.
+**Required GitHub Secrets:**
 
-**Embedding Server** — `.github/workflows/deploy-embedding.yml` — manual trigger only (GPU cost control):
+| Secret | Description |
+|---|---|
+| `GCP_PROJECT_ID` | GCP project ID |
+| `GCP_SA_KEY` | Service account JSON key (used for GCP auth and as GCS credentials on VM) |
+| `GCP_REGION` | Defaults to `us-central1` |
+| `MONGODB_URI` | MongoDB Atlas connection string |
+| `MONGODB_DATABASE` | Database name — defaults to `calm_ai_db` |
+| `GEMINI_API_KEY` | Google Gemini API key |
+| `JWT_SECRET` | Random string for signing login tokens |
+| `MODEL_REGISTRY_BUCKET` | GCS bucket name for BERTopic model storage |
+| `EMBEDDING_MODEL` | Embedding model name baked into the Docker image at build time |
+| `USE_EMBEDDING_SERVICE` | `true` to route embeddings to Vertex AI endpoint, `false` for local MiniLM |
+| `EMBEDDING_DIM` | `4096` for Qwen, `384` for MiniLM — must match MongoDB Atlas vector index |
+| `EMBEDDING_SERVICE_URL` | Vertex AI endpoint resource path — leave blank until GPU endpoint is deployed, then update and re-run pipeline |
+
+### Embedding Server — `.github/workflows/deploy-embedding.yml`
+
+Manual trigger only (GPU cost control). Go to Actions → **Embedding Server** → **Run workflow**.
 
 | Action | Description |
 |---|---|
 | `build-only` | Builds and pushes the Qwen embedding server image to Artifact Registry |
 | `up` | Builds image + registers model on Vertex AI + deploys to L4 GPU endpoint (~$0.90/hr) |
-| `down` | Undeploys model from endpoint — stops GPU billing immediately, endpoint preserved |
+| `down` | Undeploys model from endpoint — stops GPU billing, endpoint preserved for future redeploy |
 
-Trigger from GitHub Actions tab → **Embedding Server** → **Run workflow**. Run `down` immediately after testing to avoid unnecessary GPU costs.
+After running `up`, copy the endpoint resource path from the workflow summary, update the `EMBEDDING_SERVICE_URL` GitHub Secret, then re-trigger the deploy pipeline so the backend picks it up. Run `down` immediately after testing to stop GPU billing.
 
 ## Deployment
 
-### Prerequisites
+### Deployment Architecture
 
+| Component | Service | Estimated Cost |
+|---|---|---|
+| Frontend | Cloud Run (serverless) | ~$0 (free tier) |
+| Backend (FastAPI) | Cloud Run (serverless) | ~$10/mo |
+| Airflow (data pipeline) | GCE VM `e2-standard-4` | ~$100/mo |
+| Embedding (Qwen) | Vertex AI Endpoint (L4 GPU) | ~$0.90/hr (on-demand) |
+| MongoDB | MongoDB Atlas | $0–$57/mo |
+| Model artifacts | GCS bucket | ~$1/mo |
+| Docker images | Artifact Registry | ~$1/mo |
+
+---
+
+### Option A — Automated Deployment via GitHub Actions (Recommended)
+
+Full deployment is handled by the `deploy.yml` pipeline. No local Docker or GCP SDK setup needed.
+
+**Prerequisites:** GitHub repo with all secrets set (see [CI/CD](#cicd) section), GCP project with billing enabled, MongoDB Atlas cluster.
+
+```bash
+# push to any deploy/** branch to trigger the full pipeline
+git checkout -b deploy/initial-setup
+git push origin deploy/initial-setup
+```
+
+The pipeline provisions all GCP infrastructure (APIs, Artifact Registry, GCS bucket, firewall, GCE VM), builds and pushes all images with layer caching, and deploys every component. Check the Actions tab for live progress and the summary for URLs.
+
+After the pipeline completes, deploy the Vertex AI embedding endpoint separately (GPU cost control):
+- Go to **Actions → Embedding Server → Run workflow → `up`**
+- Once complete, copy the endpoint resource path from the workflow summary
+- Update the `EMBEDDING_SERVICE_URL` GitHub Secret with that path
+- Re-push to `deploy/**` so the backend picks it up
+
+---
+
+### Option B — Manual Deployment
+
+**Prerequisites:**
 - [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and authenticated (`gcloud auth login`)
-- Docker Desktop (for building images locally)
+- Docker Desktop
 - A GCP project with billing enabled
-- `.env` file in `data-pipeline/` with `GCP_PROJECT_ID` set
+- `data-pipeline/.env` configured (copy from `data-pipeline/.env.example` and fill in values)
 
-### One-Time GCP Setup
+**1. One-time GCP setup**
 
 ```bash
 cd data-pipeline
 cp .env.example .env
-# set GCP_PROJECT_ID, MONGODB_URI, GEMINI_API_KEY, and other required vars
+# fill in GCP_PROJECT_ID, MONGODB_URI, GEMINI_API_KEY, JWT_SECRET, MODEL_REGISTRY_BUCKET, etc.
 
-chmod +x deploy.sh
 ./deploy.sh
 ```
 
-`deploy.sh` enables GCP APIs (Artifact Registry, Cloud Build, Vertex AI, Cloud Storage, Cloud Run, Compute Engine), creates an Artifact Registry Docker repo (`calmai-docker`), creates a GCS bucket for model artifacts, opens a firewall rule for the Airflow UI (port 8080), and submits a Cloud Build to build and push the Airflow Docker image.
+`deploy.sh` enables all required GCP APIs, creates the Artifact Registry repo (`calmai-docker`), creates the GCS model storage bucket, and opens the firewall rule for Airflow UI (port 8080).
 
-### Deploy All Components
+**2. Deploy backend (Cloud Run)**
 
 ```bash
-# 1. backend (Cloud Run) — deploy first, frontend needs the backend URL
 bash deploy/deploy-backend.sh
-
-# 2. frontend (Cloud Run) — auto-detects backend URL from deployed backend
-bash deploy/deploy-frontend.sh
-
-# 3. airflow (GCE VM) — provisions e2-standard-4, copies .env and GCS key
-bash deploy/deploy-gce.sh
-
-# 4. embedding endpoint (optional, GPU) — on-demand L4 GPU for Qwen 8B
-bash deploy/deploy-embedding-endpoint.sh up    # deploy (~$0.90/hr)
-bash deploy/deploy-embedding-endpoint.sh down  # undeploy (stops billing)
 ```
 
-All deploy scripts auto-load `.env` from `data-pipeline/.env` or root `.env`. They accept optional `[PROJECT_ID] [REGION]` arguments or read `GCP_PROJECT_ID` from the environment.
+Builds the FastAPI image, pushes to Artifact Registry, deploys to Cloud Run. Reads all env vars from `data-pipeline/.env`.
 
-### Deployment Architecture
+**3. Deploy frontend (Cloud Run)**
 
-| Component | Service | Deploy Script | Estimated Cost |
-|---|---|---|---|
-| Frontend | Cloud Run (serverless) | `deploy/deploy-frontend.sh` | ~$0 (free tier) |
-| Backend (FastAPI) | Cloud Run (serverless) | `deploy/deploy-backend.sh` | ~$10/mo |
-| Airflow (data pipeline) | GCE VM `e2-standard-4` | `deploy/deploy-gce.sh` | ~$100/mo |
-| Embedding (Qwen 8B) | Vertex AI Endpoint (L4 GPU) | `deploy/deploy-embedding-endpoint.sh` | ~$0.90/hr (on-demand) |
-| MongoDB | MongoDB Atlas (free tier → M10) | — | $0–$57/mo |
-| Model artifacts | GCS bucket | — | ~$1/mo |
-| Docker images | Artifact Registry | `data-pipeline/deploy.sh` | ~$1/mo |
+```bash
+bash deploy/deploy-frontend.sh
+```
+
+Builds the Next.js image with the backend URL baked in, pushes, and deploys to Cloud Run.
+
+**4. Deploy Airflow (GCE VM)**
+
+```bash
+bash deploy/deploy-vm.sh
+```
+
+Provisions an `e2-standard-4` VM with Ubuntu 22.04, runs `deploy/vm-startup.sh` to install Docker, copies `data-pipeline/docker-compose.yaml`, `.env`, and the GCS service account key to the VM, then starts all Airflow containers (`docker compose up -d`).
+
+The Airflow image has all DAG and pipeline code baked in at build time — no git pull or bind mounts needed on the VM.
+
+**5. Deploy embedding endpoint (Vertex AI, L4 GPU)**
+
+```bash
+bash deploy/deploy-embedding-endpoint.sh up    # register model + deploy to L4 GPU endpoint
+bash deploy/deploy-embedding-endpoint.sh down  # undeploy (stops ~$0.90/hr billing)
+```
+
+Once deployed, update `EMBEDDING_SERVICE_URL` in your `.env` and redeploy the backend:
+
+```bash
+gcloud run services update calmai-backend \
+  --region=us-central1 \
+  --update-env-vars="USE_EMBEDDING_SERVICE=true,EMBEDDING_SERVICE_URL=<ENDPOINT_RESOURCE_PATH>,EMBEDDING_DIM=4096"
+```
+
+All deploy scripts auto-load `.env` from `data-pipeline/.env` or root `.env` and accept optional `[PROJECT_ID] [REGION]` arguments.
+
+---
 
 ### Shutdown / Redeploy
 
@@ -477,7 +557,6 @@ gcloud compute instances stop calmai-airflow --zone=us-central1-a
 
 # restart the GCE VM
 gcloud compute instances start calmai-airflow --zone=us-central1-a
-gcloud compute ssh calmai-airflow --command="cd ~/calmai && docker compose up -d"
 
 # Cloud Run services scale to zero automatically — no action needed
 ```
@@ -486,14 +565,16 @@ gcloud compute ssh calmai-airflow --command="cd ~/calmai && docker compose up -d
 
 | File | Description |
 |---|---|
-| `data-pipeline/deploy.sh` | One-time GCP setup — enable APIs, create repos/buckets, submit Cloud Build |
-| `data-pipeline/cloudbuild.yaml` | Cloud Build config — builds + pushes Airflow Docker image to Artifact Registry |
+| `.github/workflows/deploy.yml` | Automated CD pipeline — triggered on `deploy/**` branch push |
+| `.github/workflows/deploy-embedding.yml` | Embedding server — manual build / up / down for GPU cost control |
+| `data-pipeline/deploy.sh` | One-time GCP setup — enable APIs, create Artifact Registry repo and GCS bucket |
 | `deploy/deploy-backend.sh` | Build, push, and deploy backend to Cloud Run |
-| `deploy/deploy-frontend.sh` | Build, push, and deploy frontend to Cloud Run (auto-detects backend URL) |
-| `deploy/deploy-gce.sh` | Provision GCE VM, copy `.env` and GCS key, runs startup script |
-| `deploy/deploy-embedding-endpoint.sh` | Deploy/undeploy Qwen 8B on Vertex AI L4 GPU endpoint |
-| `deploy/gce-startup.sh` | GCE startup script — installs Docker, authenticates Artifact Registry |
-| `.gitattributes` | Enforces LF line endings for `.sh`, `.yaml`, `Dockerfile`, `.env` files |
+| `deploy/deploy-frontend.sh` | Build, push, and deploy frontend to Cloud Run |
+| `deploy/deploy-vm.sh` | Provision GCE VM, copy configs, start Airflow via docker compose |
+| `deploy/vm-startup.sh` | GCE VM startup script — installs Docker, authenticates Artifact Registry |
+| `deploy/deploy-embedding-endpoint.sh` | Deploy/undeploy Qwen embedding server on Vertex AI L4 GPU endpoint |
+| `deploy/embedding_server/Dockerfile` | Qwen embedding server — model baked in at build time via `ARG EMBEDDING_MODEL` |
+| `deploy/embedding_server/server.py` | FastAPI server — `/embed`, `/health`, `/ready`, `/info` endpoints |
 
 ## Contributing
 
